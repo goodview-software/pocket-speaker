@@ -48,9 +48,9 @@ class Orb extends Control:
 
 	func _draw() -> void:
 		var c := size / 2.0
-		var r := minf(size.x, size.y) * 0.30
+		var r := minf(size.x, size.y) * 0.26
 		for i in 4:
-			var rr := r + 16.0 * (i + 1) + level * 34.0 + sin(pulse + i) * 3.0
+			var rr := r + 8.0 * (i + 1) + level * 14.0 + sin(pulse + i) * 2.0
 			draw_circle(c, rr, Color(color, 0.11 - i * 0.025))
 		draw_circle(c, r, Color(color, 0.20))
 		draw_arc(c, r, 0.0, TAU, 96, color, 4.0, true)
@@ -122,9 +122,10 @@ class Toggle extends Control:
 	func _draw() -> void:
 		var h := size.y
 		var bg := Color("2a313c").lerp(Color("4de1b4"), t)
-		draw_rect(Rect2(0, 0, size.x, h), bg, true)  # base, arrondie ci-dessous
+		draw_rect(Rect2(h / 2, 0, size.x - h, h), bg, true)
 		draw_circle(Vector2(h / 2, h / 2), h / 2, bg)
 		draw_circle(Vector2(size.x - h / 2, h / 2), h / 2, bg)
+		draw_circle(Vector2(lerpf(h / 2, size.x - h / 2, t) + 0.0, h / 2 + 1.0), h / 2 - 3, Color(0, 0, 0, 0.25))
 		draw_circle(Vector2(lerpf(h / 2, size.x - h / 2, t), h / 2), h / 2 - 4, Color.WHITE)
 
 
@@ -152,6 +153,7 @@ var orb: Orb
 var status: Label
 var sub: Label
 var chip: Label
+var chip_sb: StyleBoxFlat
 var meter_out: Meter
 var meter_mic: Meter
 var tog_sound: Toggle
@@ -279,6 +281,18 @@ func _make_theme() -> Theme:
 	th.set_stylebox("slider", "HSlider", track)
 	th.set_stylebox("grabber_area", "HSlider", fill)
 	th.set_stylebox("grabber_area_highlight", "HSlider", fill)
+	var sc := StyleBoxFlat.new()
+	sc.bg_color = Color(0, 0, 0, 0)
+	sc.content_margin_left = 6
+	sc.content_margin_right = 6
+	var sg := StyleBoxFlat.new()
+	sg.bg_color = Color(1, 1, 1, 0.18)
+	sg.set_corner_radius_all(3)
+	sg.content_margin_left = 6
+	sg.content_margin_right = 6
+	th.set_stylebox("scroll", "VScrollBar", sc)
+	for n in ["grabber", "grabber_highlight", "grabber_pressed"]:
+		th.set_stylebox(n, "VScrollBar", sg)
 	th.set_icon("grabber", "HSlider", _knob(Color.WHITE))
 	th.set_icon("grabber_highlight", "HSlider", _knob(C_OK))
 	th.set_icon("grabber_disabled", "HSlider", _knob(C_DIM))
@@ -332,7 +346,8 @@ func _toggle_row(v: Control, title: String, hint: String, tog: Toggle) -> void:
 	tv.add_theme_constant_override("separation", 2)
 	h.add_child(tv)
 	_label(title, 19, C_TEXT, tv)
-	_label(hint, 13, C_DIM, tv)
+	var hl := _label(hint, 13, C_DIM, tv)
+	hl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	tog.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	h.add_child(tog)
 
@@ -361,7 +376,7 @@ func _build_ui() -> void:
 	center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	margin.add_child(center)
 	content = VBoxContainer.new()
-	content.add_theme_constant_override("separation", 16)
+	content.add_theme_constant_override("separation", 14)
 	content.custom_minimum_size = Vector2(440, 0)
 	center.add_child(content)
 	get_viewport().size_changed.connect(_fit_width)
@@ -371,16 +386,27 @@ func _build_ui() -> void:
 	content.add_child(head)
 	var t := _label("Pocket Speaker", 24, C_TEXT, head)
 	t.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	chip = _label("", 14, C_DIM, head)
+	var chip_p := PanelContainer.new()
+	chip_sb = StyleBoxFlat.new()
+	chip_sb.set_corner_radius_all(14)
+	chip_sb.content_margin_left = 12
+	chip_sb.content_margin_right = 12
+	chip_sb.content_margin_top = 4
+	chip_sb.content_margin_bottom = 4
+	chip_p.add_theme_stylebox_override("panel", chip_sb)
+	head.add_child(chip_p)
+	chip = _label("", 14, C_DIM, chip_p)
 
 	orb = Orb.new()
-	orb.custom_minimum_size = Vector2(0, 230)
+	orb.custom_minimum_size = Vector2(0, 210)
 	content.add_child(orb)
 	status = _label("", 24, C_TEXT, content)
 	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sub = _label("", 15, C_DIM, content)
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	sub.custom_minimum_size = Vector2(0, 42)
+	sub.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 
 	var c1 := _card(content)
 	tog_sound = Toggle.new()
@@ -456,10 +482,12 @@ func _ui_tick(delta: float) -> void:
 		var tr := "USB" if peer.get_connected_host() == "127.0.0.1" else "Wi-Fi"
 		chip.text = tr + (" · %d ms" % rtt_ms if rtt_ms >= 0 else "")
 		chip.add_theme_color_override("font_color", C_OK)
+		chip_sb.bg_color = Color(C_OK, 0.14)
 		foot.text = ("Connecté à " + peer_name + " · " if peer_name != "" else "") + "v" + APP_VERSION
 	else:
 		chip.text = "Hors ligne"
 		chip.add_theme_color_override("font_color", C_DIM)
+		chip_sb.bg_color = Color(1, 1, 1, 0.06)
 		foot.text = "v" + APP_VERSION
 
 
