@@ -260,10 +260,10 @@ func _make_theme() -> Theme:
 		sb.set_corner_radius_all(12)
 		sb.set_content_margin_all(12)
 		if st == "focus":
-			sb.bg_color = Color(0, 0, 0, 0)
-			sb.set_border_width_all(2)
-			sb.border_color = C_OK
+			sb.bg_color = Color("232a34")
 		th.set_stylebox(st, "OptionButton", sb)
+	for cls in ["HSlider", "ScrollContainer", "VScrollBar", "OptionButton", "PopupMenu"]:
+		th.set_stylebox("focus", cls, StyleBoxEmpty.new()) if cls != "OptionButton" else null
 	var pop := StyleBoxFlat.new()
 	pop.bg_color = Color("232a34")
 	pop.set_corner_radius_all(12)
@@ -328,8 +328,7 @@ func _card(parent: Control) -> VBoxContainer:
 	sb.bg_color = C_CARD
 	sb.set_corner_radius_all(20)
 	sb.set_content_margin_all(18)
-	sb.set_border_width_all(1)
-	sb.border_color = Color(1, 1, 1, 0.06)
+	sb.anti_aliasing_size = 1.2
 	p.add_theme_stylebox_override("panel", sb)
 	parent.add_child(p)
 	var v := VBoxContainer.new()
