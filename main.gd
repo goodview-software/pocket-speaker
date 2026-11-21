@@ -97,6 +97,106 @@ class Meter extends Control:
 			draw_rect(Rect2(i * (w + gap), 0, w, size.y), col if lit else Color(1, 1, 1, 0.07), true)
 
 
+class Ico:
+	static func box(ci: CanvasItem, r: Rect2, rad: float, col: Color) -> void:
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = col
+		sb.set_corner_radius_all(int(rad))
+		sb.anti_aliasing_size = 1.0
+		ci.draw_style_box(sb, r)
+
+	static func draw_kind(ci: CanvasItem, kind: String, c: Vector2, k: float, col: Color) -> void:
+		match kind:
+			"speaker", "speaker_low":
+				var body := PackedVector2Array([Vector2(-18, -9), Vector2(-6, -9), Vector2(8, -21),
+						Vector2(8, 21), Vector2(-6, 9), Vector2(-18, 9)])
+				for i in body.size():
+					body[i] = c + Vector2(-4, 0) * k + body[i] * k
+				ci.draw_colored_polygon(body, col)
+				if kind == "speaker":
+					ci.draw_arc(c + Vector2(6, 0) * k, 12.0 * k, -0.9, 0.9, 16, col, 3.0 * k, true)
+					ci.draw_arc(c + Vector2(6, 0) * k, 23.0 * k, -0.9, 0.9, 20, Color(col, 0.6), 3.0 * k, true)
+			"mic":
+				box(ci, Rect2(c + Vector2(-8, -22) * k, Vector2(16, 28) * k), 8.0 * k, col)
+				ci.draw_arc(c + Vector2(0, -2) * k, 15.0 * k, 0.0, PI, 24, col, 3.0 * k, true)
+				ci.draw_line(c + Vector2(0, 13) * k, c + Vector2(0, 22) * k, col, 3.0 * k, true)
+				ci.draw_line(c + Vector2(-8, 22) * k, c + Vector2(8, 22) * k, col, 3.0 * k, true)
+			"usb":
+				ci.draw_line(c + Vector2(-22, 0) * k, c + Vector2(20, 0) * k, col, 3.0 * k, true)
+				ci.draw_circle(c + Vector2(-24, 0) * k, 5.5 * k, col)
+				ci.draw_colored_polygon(PackedVector2Array([c + Vector2(18, -7) * k, c + Vector2(30, 0) * k,
+						c + Vector2(18, 7) * k]), col)
+				ci.draw_polyline(PackedVector2Array([c + Vector2(-8, 0) * k, c + Vector2(0, -13) * k,
+						c + Vector2(10, -13) * k]), col, 3.0 * k, true)
+				ci.draw_rect(Rect2(c + Vector2(10, -17) * k, Vector2(8, 8) * k), col)
+				ci.draw_polyline(PackedVector2Array([c + Vector2(2, 0) * k, c + Vector2(10, 12) * k]), col, 3.0 * k, true)
+				ci.draw_circle(c + Vector2(12, 12) * k, 4.5 * k, col)
+			"wifi":
+				ci.draw_circle(c + Vector2(0, 16) * k, 3.5 * k, col)
+				for r in [12.0, 22.0, 32.0]:
+					ci.draw_arc(c + Vector2(0, 16) * k, r * k, -2.36, -0.78, 20, col, 3.0 * k, true)
+			"auto":
+				var st := PackedVector2Array([Vector2(0, -22), Vector2(5, -5), Vector2(22, 0), Vector2(5, 5),
+						Vector2(0, 22), Vector2(-5, 5), Vector2(-22, 0), Vector2(-5, -5)])
+				for i in st.size():
+					st[i] = c + st[i] * k
+				ci.draw_colored_polygon(st, col)
+
+
+class Icon extends Control:
+	var kind := "speaker"
+	var col := Color.WHITE:
+		set(v):
+			if v != col:
+				col = v
+				queue_redraw()
+
+	func _init(k := "speaker") -> void:
+		kind = k
+		custom_minimum_size = Vector2(40, 40)
+
+	func _draw() -> void:
+		Ico.draw_kind(self, kind, size / 2.0, minf(size.x, size.y) / 46.0, col)
+
+
+class Seg extends Control:
+	signal picked(id: int)
+	var ids: Array = []
+	var kinds: Array = []
+	var sel := 0
+	var hi := 0.0
+
+	func _init() -> void:
+		custom_minimum_size = Vector2(0, 54)
+
+	func setup(k: Array, i: Array, cur: int) -> void:
+		kinds = k
+		ids = i
+		sel = maxi(0, ids.find(cur))
+		hi = sel
+
+	func _process(d: float) -> void:
+		hi = move_toward(hi, sel, d * 14.0)
+		queue_redraw()
+
+	func _gui_input(e: InputEvent) -> void:
+		if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT and not ids.is_empty():
+			sel = clampi(int(e.position.x / (size.x / ids.size())), 0, ids.size() - 1)
+			picked.emit(ids[sel])
+			accept_event()
+
+	func _draw() -> void:
+		if ids.is_empty():
+			return
+		Ico.box(self, Rect2(Vector2.ZERO, size), size.y / 2.0, Color("232a34"))
+		var w := size.x / ids.size()
+		Ico.box(self, Rect2(Vector2(hi * w + 4, 4), Vector2(w - 8, size.y - 8)), (size.y - 8) / 2.0, Color("4de1b4", 0.22))
+		for i in ids.size():
+			var on := i == sel
+			Ico.draw_kind(self, kinds[i], Vector2((i + 0.5) * w, size.y / 2.0), 0.55,
+					Color("4de1b4") if on else Color("8892a0"))
+
+
 class Toggle extends Control:
 	signal toggled(on: bool)
 	var on := false
@@ -154,13 +254,13 @@ var status: Label
 var sub: Label
 var chip: Label
 var chip_sb: StyleBoxFlat
+var ico_sound: Icon
+var ico_mic: Icon
 var meter_out: Meter
 var meter_mic: Meter
 var tog_sound: Toggle
 var tog_mic: Toggle
 var vol_slider: HSlider
-var vol_label: Label
-var foot: Label
 var content: VBoxContainer
 
 # PC
@@ -337,20 +437,6 @@ func _card(parent: Control) -> VBoxContainer:
 	return v
 
 
-func _toggle_row(v: Control, title: String, hint: String, tog: Toggle) -> void:
-	var h := HBoxContainer.new()
-	v.add_child(h)
-	var tv := VBoxContainer.new()
-	tv.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	tv.add_theme_constant_override("separation", 2)
-	h.add_child(tv)
-	_label(title, 19, C_TEXT, tv)
-	var hl := _label(hint, 13, C_DIM, tv)
-	hl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	tog.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	h.add_child(tog)
-
-
 func _build_ui() -> void:
 	theme = _make_theme()
 	var bg := ColorRect.new()
@@ -375,7 +461,7 @@ func _build_ui() -> void:
 	center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	margin.add_child(center)
 	content = VBoxContainer.new()
-	content.add_theme_constant_override("separation", 14)
+	content.add_theme_constant_override("separation", 16)
 	content.custom_minimum_size = Vector2(440, 0)
 	center.add_child(content)
 	get_viewport().size_changed.connect(_fit_width)
@@ -383,8 +469,9 @@ func _build_ui() -> void:
 
 	var head := HBoxContainer.new()
 	content.add_child(head)
-	var t := _label("Pocket Speaker", 24, C_TEXT, head)
-	t.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var sp := Control.new()
+	sp.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(sp)
 	var chip_p := PanelContainer.new()
 	chip_sb = StyleBoxFlat.new()
 	chip_sb.set_corner_radius_all(14)
@@ -397,27 +484,37 @@ func _build_ui() -> void:
 	chip = _label("", 14, C_DIM, chip_p)
 
 	orb = Orb.new()
-	orb.custom_minimum_size = Vector2(0, 210)
+	orb.custom_minimum_size = Vector2(0, 230)
 	content.add_child(orb)
-	status = _label("", 24, C_TEXT, content)
+	status = _label("", 22, C_TEXT, content)
 	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	sub = _label("", 15, C_DIM, content)
+	sub = _label("", 14, C_DIM, content)
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	sub.custom_minimum_size = Vector2(0, 42)
-	sub.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+	sub.custom_minimum_size = Vector2(0, 40)
 
 	var c1 := _card(content)
+	var r1 := HBoxContainer.new()
+	r1.add_theme_constant_override("separation", 14)
+	c1.add_child(r1)
+	ico_sound = Icon.new("speaker")
+	r1.add_child(ico_sound)
+	meter_out = Meter.new()
+	meter_out.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	meter_out.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	r1.add_child(meter_out)
 	tog_sound = Toggle.new()
 	tog_sound.set_on(want_sound)
 	tog_sound.toggled.connect(_on_sound)
-	_toggle_row(c1, "Enceinte du téléphone", "Le son du PC sort sur le téléphone", tog_sound)
-	meter_out = Meter.new()
-	c1.add_child(meter_out)
+	tog_sound.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	r1.add_child(tog_sound)
 	var vh := HBoxContainer.new()
-	vh.add_theme_constant_override("separation", 12)
+	vh.add_theme_constant_override("separation", 10)
 	c1.add_child(vh)
-	_label("Volume", 15, C_DIM, vh)
+	var il := Icon.new("speaker_low")
+	il.custom_minimum_size = Vector2(40, 30)
+	il.col = C_DIM
+	vh.add_child(il)
 	vol_slider = HSlider.new()
 	vol_slider.min_value = 0
 	vol_slider.max_value = 100
@@ -428,33 +525,34 @@ func _build_ui() -> void:
 	vol_slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	vol_slider.value_changed.connect(_on_vol)
 	vh.add_child(vol_slider)
-	vol_label = _label("%d %%" % int(vol * 100.0), 15, C_TEXT, vh)
-	vol_label.custom_minimum_size = Vector2(48, 0)
-	vol_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	var ih := Icon.new("speaker")
+	ih.custom_minimum_size = Vector2(40, 30)
+	ih.col = C_DIM
+	vh.add_child(ih)
 
 	var c2 := _card(content)
+	var r2 := HBoxContainer.new()
+	r2.add_theme_constant_override("separation", 14)
+	c2.add_child(r2)
+	ico_mic = Icon.new("mic")
+	r2.add_child(ico_mic)
+	meter_mic = Meter.new()
+	meter_mic.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	meter_mic.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	r2.add_child(meter_mic)
 	tog_mic = Toggle.new()
 	tog_mic.set_on(want_mic)
 	tog_mic.toggled.connect(_on_mic)
-	_toggle_row(c2, "Micro du téléphone", "Devient le micro « Micro-Telephone » du PC" if not is_phone
-			else "Envoie ton micro au PC", tog_mic)
-	meter_mic = Meter.new()
-	c2.add_child(meter_mic)
+	tog_mic.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	r2.add_child(tog_mic)
 
 	if not is_phone:
-		var c3 := _card(content)
-		_label("Connexion", 15, C_DIM, c3)
-		var ob := OptionButton.new()
-		ob.add_item("Auto (USB puis Wi-Fi)", 0)
-		ob.add_item("USB seulement", 2)
-		ob.add_item("Wi-Fi seulement", 1)
-		ob.select(ob.get_item_index(link_mode))
-		ob.item_selected.connect(func(i: int):
-			link_mode = ob.get_item_id(i)
+		var seg := Seg.new()
+		seg.setup(["auto", "usb", "wifi"], [0, 2, 1], link_mode)
+		seg.picked.connect(func(id: int):
+			link_mode = id
 			_save_pref())
-		c3.add_child(ob)
-	foot = _label("v" + APP_VERSION, 13, C_DIM, content)
-	foot.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		content.add_child(seg)
 
 
 func _fit_width() -> void:
@@ -465,12 +563,14 @@ func _fit_width() -> void:
 func _set_status(st: int, a: String, b: String) -> void:
 	state = st
 	status.text = a
-	sub.text = b
+	sub.text = b if st == ST_IDLE else ""
 
 
 func _ui_tick(delta: float) -> void:
 	lvl_out = maxf(0.0, lvl_out - delta * 1.2)
 	lvl_mic = maxf(0.0, lvl_mic - delta * 1.2)
+	ico_sound.col = C_TEXT if want_sound else C_DIM
+	ico_mic.col = C_TEXT if want_mic else C_DIM
 	meter_out.value = lvl_out if want_sound else 0.0
 	meter_mic.value = lvl_mic if want_mic else 0.0
 	orb.linked = state == ST_LINKED
@@ -482,12 +582,10 @@ func _ui_tick(delta: float) -> void:
 		chip.text = tr + (" · %d ms" % rtt_ms if rtt_ms >= 0 else "")
 		chip.add_theme_color_override("font_color", C_OK)
 		chip_sb.bg_color = Color(C_OK, 0.14)
-		foot.text = ("Connecté à " + peer_name + " · " if peer_name != "" else "") + "v" + APP_VERSION
 	else:
 		chip.text = "Hors ligne"
 		chip.add_theme_color_override("font_color", C_DIM)
 		chip_sb.bg_color = Color(1, 1, 1, 0.06)
-		foot.text = "v" + APP_VERSION
 
 
 func _on_sound(on: bool) -> void:
@@ -508,7 +606,6 @@ func _on_mic(on: bool) -> void:
 
 func _on_vol(v: float) -> void:
 	vol = v / 100.0
-	vol_label.text = "%d %%" % int(v)
 	if is_phone and player != null:
 		player.volume_db = linear_to_db(maxf(vol, 0.0001)) if vol > 0.0 else -80.0
 	_save_pref()
@@ -519,7 +616,6 @@ func _apply_ctrl_ui() -> void:
 	tog_sound.set_on(want_sound)
 	tog_mic.set_on(want_mic)
 	vol_slider.set_value_no_signal(vol * 100.0)
-	vol_label.text = "%d %%" % int(vol * 100.0)
 	if is_phone:
 		player.volume_db = linear_to_db(vol) if vol > 0.0 else -80.0
 		mic_player.stream_paused = not want_mic
