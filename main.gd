@@ -37,13 +37,25 @@ enum { ST_IDLE, ST_WAIT, ST_LINKED }
 # ------------------------------------------------------------------ Widgets dessinés
 
 class Orb extends Control:
+	const SHEET := preload("res://mascot/goody.png")
+	const ANIMS := {"idle": [0, 4], "happy": [1, 4], "wait": [2, 4], "off": [3, 4], "sad": [4, 4]}
+	const FPS := {"idle": 3.0, "happy": 6.0, "wait": 3.0, "off": 1.5, "sad": 2.0}
 	var color := Color("5b6573")
 	var level := 0.0
-	var linked := false
 	var pulse := 0.0
+	var t := 0.0
+	var anim := "off":
+		set(v):
+			if v != anim:
+				anim = v
+				t = 0.0
+
+	func _init() -> void:
+		texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 
 	func _process(d: float) -> void:
 		pulse = fposmod(pulse + d, TAU)
+		t += d * FPS[anim] * (1.0 + level * 1.5)
 		queue_redraw()
 
 	func _draw() -> void:
@@ -52,20 +64,14 @@ class Orb extends Control:
 		for i in 4:
 			var rr := r + 8.0 * (i + 1) + level * 14.0 + sin(pulse + i) * 2.0
 			draw_circle(c, rr, Color(color, 0.11 - i * 0.025))
-		draw_circle(c, r, Color(color, 0.20))
-		draw_arc(c, r, 0.0, TAU, 96, color, 4.0, true)
-		var k := r / 46.0
-		var body := PackedVector2Array([Vector2(-24, -11), Vector2(-9, -11), Vector2(10, -27), Vector2(10, 27),
-				Vector2(-9, 11), Vector2(-24, 11)])
-		for i in body.size():
-			body[i] = c + Vector2(-4, 0) * k + body[i] * k
-		draw_colored_polygon(body, Color.WHITE)
-		if linked:
-			draw_arc(c + Vector2(8, 0) * k, 16.0 * k, -0.9, 0.9, 16, Color.WHITE, 3.5 * k, true)
-			draw_arc(c + Vector2(8, 0) * k, 30.0 * k, -0.9, 0.9, 20, Color(1, 1, 1, 0.6), 3.5 * k, true)
-		else:
-			draw_line(c + Vector2(14, -12) * k, c + Vector2(34, 12) * k, Color.WHITE, 3.5 * k, true)
-			draw_line(c + Vector2(34, -12) * k, c + Vector2(14, 12) * k, Color.WHITE, 3.5 * k, true)
+		draw_circle(c, r, Color(color, 0.16))
+		var row: int = ANIMS[anim][0]
+		var n: int = ANIMS[anim][1]
+		var sc := maxi(1, int(size.y * 0.72 / 32.0))
+		var px := 32 * sc
+		var bob := 0.0 if anim != "idle" else 0.0
+		var pos := (c - Vector2(px, px) / 2.0 + Vector2(0, bob)).round()
+		draw_texture_rect_region(SHEET, Rect2(pos, Vector2(px, px)), Rect2((int(t) % n) * 32, row * 32, 32, 32))
 
 
 class Meter extends Control:
@@ -573,7 +579,12 @@ func _ui_tick(delta: float) -> void:
 	ico_mic.col = C_TEXT if want_mic else C_DIM
 	meter_out.value = lvl_out if want_sound else 0.0
 	meter_mic.value = lvl_mic if want_mic else 0.0
-	orb.linked = state == ST_LINKED
+	var anim_n := "off"
+	if state == ST_LINKED:
+		anim_n = "happy" if maxf(lvl_out, lvl_mic) > 0.04 else "idle"
+	elif state == ST_WAIT:
+		anim_n = "wait"
+	orb.anim = anim_n
 	orb.level = maxf(meter_out.shown, meter_mic.shown) if state == ST_LINKED else 0.0
 	var col: Color = [C_IDLE, C_WAIT, C_OK][state]
 	orb.color = orb.color.lerp(col, minf(1.0, delta * 8.0))
