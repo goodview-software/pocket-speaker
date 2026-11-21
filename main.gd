@@ -14,7 +14,7 @@ const APP_VERSION := "0.1.0"
 const T_AUDIO := 1  # PC -> téléphone : PCM s16 stéréo 48 kHz
 const T_MIC := 2  # téléphone -> PC : PCM s16 mono
 const T_HELLO := 3  # téléphone -> PC : u32 fréquence micro + nom du téléphone
-const T_NAME := 4  # PC -> téléphone : nom du PC
+const T_NAME := 4  # PC -> téléphone : [variante de mascotte u8] + nom du PC
 const T_CTRL := 5  # [son u8, micro u8, volume 0-100 u8] (dans les deux sens)
 const T_PING := 7
 const T_PONG := 8
@@ -41,6 +41,7 @@ class Orb extends Control:
 	const ANIMS := {"idle": [0, 4], "happy": [1, 4], "wait": [2, 4], "off": [3, 4], "sad": [4, 4]}
 	const FPS := {"idle": 3.0, "happy": 6.0, "wait": 3.0, "off": 1.5, "sad": 2.0}
 	var color := Color("5b6573")
+	var variant := 0
 	var level := 0.0
 	var pulse := 0.0
 	var t := 0.0
@@ -65,7 +66,7 @@ class Orb extends Control:
 			var rr := r + 8.0 * (i + 1) + level * 14.0 + sin(pulse + i) * 2.0
 			draw_circle(c, rr, Color(color, 0.11 - i * 0.025))
 		draw_circle(c, r, Color(color, 0.16))
-		var row: int = ANIMS[anim][0]
+		var row: int = ANIMS[anim][0] + variant * 5
 		var n: int = ANIMS[anim][1]
 		var sc := maxi(1, int(size.y * 0.72 / 32.0))
 		var px := 32 * sc
@@ -253,6 +254,8 @@ var link_mode := 0  # 0 auto · 1 Wi-Fi · 2 USB
 var peer_name := ""
 var mic_rate := 48000
 var linked_t := 0.0
+var mascot := 0  # variante de Goody choisie dans le Goodview Launcher (profil partagé)
+var mascot_t := 0.0
 
 # UI
 var orb: Orb
@@ -321,7 +324,30 @@ func _notification(what: int) -> void:
 		get_tree().quit()
 
 
+## Mascotte choisie dans le Goodview Launcher : ~/.config/goodview/profile.json
+func _read_shared_profile() -> void:
+	var p := OS.get_environment("HOME") + "/.config/goodview/profile.json"
+	if not FileAccess.file_exists(p):
+		return
+	var d = JSON.parse_string(FileAccess.get_file_as_string(p))
+	if d is Dictionary:
+		var m := clampi(int(d.get("mascot", 0)), 0, 7)
+		if m != mascot:
+			mascot = m
+			_send_name()
+
+
+func _send_name() -> void:
+	if not is_phone and peer != null and name_sent:
+		_send(T_NAME, PackedByteArray([mascot]) + _pc_name().to_utf8_buffer())
+
+
 func _process(delta: float) -> void:
+	if not is_phone:
+		mascot_t -= delta
+		if mascot_t <= 0.0:
+			mascot_t = 2.0
+			_read_shared_profile()
 	if is_phone:
 		_phone_process(delta)
 	else:
@@ -585,6 +611,7 @@ func _ui_tick(delta: float) -> void:
 	elif state == ST_WAIT:
 		anim_n = "wait"
 	orb.anim = anim_n
+	orb.variant = mascot
 	orb.level = maxf(meter_out.shown, meter_mic.shown) if state == ST_LINKED else 0.0
 	var col: Color = [C_IDLE, C_WAIT, C_OK][state]
 	orb.color = orb.color.lerp(col, minf(1.0, delta * 8.0))
@@ -689,7 +716,9 @@ func _on_frame(t: int, pl: PackedByteArray) -> void:
 			if is_phone:
 				_play(pl)
 		T_NAME:
-			peer_name = pl.get_string_from_utf8()
+			if pl.size() >= 1:
+				mascot = clampi(pl[0], 0, 7)
+				peer_name = pl.slice(1).get_string_from_utf8()
 		T_HELLO:
 			if not is_phone and pl.size() >= 4:
 				mic_rate = pl.decode_u32(0)
@@ -921,7 +950,7 @@ func _pc_process(delta: float) -> void:
 		if peer.get_status() == StreamPeerTCP.STATUS_CONNECTED:
 			if not name_sent:
 				name_sent = true
-				_send(T_NAME, _pc_name().to_utf8_buffer())
+				_send(T_NAME, PackedByteArray([mascot]) + _pc_name().to_utf8_buffer())
 			if linked:
 				linked_t += delta
 				_pc_pump_capture()
@@ -933,7 +962,7 @@ func _pc_process(delta: float) -> void:
 					b.encode_u32(0, Time.get_ticks_msec())
 					_send(T_PING, b)
 				if test_mode and linked_t > 3.0:
-					print("POCKET_TEST link ok rtt=%d phone=%s" % [rtt_ms, peer_name])
+					print("POCKET_TEST link ok rtt=%d phone=%s mascot=%d" % [rtt_ms, peer_name, mascot])
 					_shutdown()
 					get_tree().quit()
 			else:
