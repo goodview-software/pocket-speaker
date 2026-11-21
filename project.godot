@@ -4,7 +4,7 @@ config_version=5
 
 config/name="Pocket Speaker"
 config/description="Le téléphone devient l'enceinte et le micro du PC (USB ou Wi-Fi)."
-run/main_scene="res://main.tscn"
+run/main_scene="res://boot.tscn"
 config/icon="res://icon.png"
 config/features=PackedStringArray("4.7")
 

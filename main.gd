@@ -10,7 +10,10 @@ const BEACON_PORT := PORT + 1  # téléphone -> réseau (UDP) : "POCKET"
 const RATE := 48000
 const PKG := "fr.goodview.pocketspeaker"
 const VERSION := 1  # versionCode de l'APK
-const APP_VERSION := "0.1.1"
+const KTok := preload("res://kit/tokens.gd")
+const KPx := preload("res://kit/ui/px.gd")
+const KPixelize := preload("res://kit/pixelize.gd")
+const APP_VERSION: String = preload("res://version.gd").VERSION
 const T_AUDIO := 1  # PC -> téléphone : PCM s16 stéréo 48 kHz
 const T_MIC := 2  # téléphone -> PC : PCM s16 mono
 const T_HELLO := 3  # téléphone -> PC : u32 fréquence micro + nom du téléphone
@@ -62,10 +65,10 @@ class Orb extends Control:
 	func _draw() -> void:
 		var c := size / 2.0
 		var r := minf(size.x, size.y) * 0.26
-		for i in 4:
-			var rr := r + 8.0 * (i + 1) + level * 14.0 + sin(pulse + i) * 2.0
-			draw_circle(c, rr, Color(color, 0.11 - i * 0.025))
-		draw_circle(c, r, Color(color, 0.16))
+		for i in 4:  # halos carrés par paliers de 4 px
+			var rr := floorf((r + 8.0 * (i + 1) + level * 14.0 + sin(pulse + i) * 2.0) / 4.0) * 4.0
+			draw_rect(Rect2(c - Vector2(rr, rr), Vector2(rr, rr) * 2.0), Color(color, 0.11 - i * 0.025))
+		draw_rect(Rect2(c - Vector2(r, r), Vector2(r, r) * 2.0), Color(color, 0.16))
 		var row: int = ANIMS[anim][0] + variant * 5
 		var n: int = ANIMS[anim][1]
 		var sc := maxi(1, int(size.y * 0.72 / 32.0))
@@ -106,11 +109,7 @@ class Meter extends Control:
 
 class Ico:
 	static func box(ci: CanvasItem, r: Rect2, rad: float, col: Color) -> void:
-		var sb := StyleBoxFlat.new()
-		sb.bg_color = col
-		sb.set_corner_radius_all(int(rad))
-		sb.anti_aliasing_size = 1.0
-		ci.draw_style_box(sb, r)
+		KPx.panel(ci, r, col, Color(0, 0, 0, 0), false)
 
 	static func draw_kind(ci: CanvasItem, kind: String, c: Vector2, k: float, col: Color) -> void:
 		match kind:
@@ -229,11 +228,9 @@ class Toggle extends Control:
 	func _draw() -> void:
 		var h := size.y
 		var bg := Color("2a313c").lerp(Color("4de1b4"), t)
-		draw_rect(Rect2(h / 2, 0, size.x - h, h), bg, true)
-		draw_circle(Vector2(h / 2, h / 2), h / 2, bg)
-		draw_circle(Vector2(size.x - h / 2, h / 2), h / 2, bg)
-		draw_circle(Vector2(lerpf(h / 2, size.x - h / 2, t) + 0.0, h / 2 + 1.0), h / 2 - 3, Color(0, 0, 0, 0.25))
-		draw_circle(Vector2(lerpf(h / 2, size.x - h / 2, t), h / 2), h / 2 - 4, Color.WHITE)
+		KPx.panel(self, Rect2(Vector2.ZERO, size).grow(-2), bg, Color(0, 0, 0, 0), false)
+		var kx := lerpf(6.0, size.x - h + 2.0, t)
+		KPx.panel(self, Rect2(kx, 6, h - 8, h - 12), Color.WHITE, Color(0, 0, 0, 0), false)
 
 
 # ------------------------------------------------------------------ État
@@ -310,12 +307,23 @@ var beacon_t := 0.0
 func _ready() -> void:
 	get_tree().set_auto_accept_quit(false)
 	_load_pref()
+	KTok.set_pixel(true)
 	_build_ui()
+	KPixelize.install(self)
 	if is_phone:
 		_phone_init()
 	else:
 		_pc_init()
 	_set_status(ST_IDLE, "Prêt", "")
+	_start_updates()
+
+## Mise à jour automatique commune aux apps Goodview (kit/update) : carte pixel art, bouton vert « METTRE À JOUR ».
+func _start_updates() -> void:
+	if test_mode:
+		return
+	var ui = preload("res://kit/update/update_ui.gd").new()
+	add_child(ui)
+	ui.setup("goodview-software/pocket-speaker", APP_VERSION)
 
 
 func _notification(what: int) -> void:
@@ -428,7 +436,7 @@ func _make_theme() -> Theme:
 	th.set_icon("grabber", "HSlider", _knob(Color.WHITE))
 	th.set_icon("grabber_highlight", "HSlider", _knob(C_OK))
 	th.set_icon("grabber_disabled", "HSlider", _knob(C_DIM))
-	return th
+	return KPixelize.theme(th)
 
 
 func _knob(col: Color) -> Texture2D:
