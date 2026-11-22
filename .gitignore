@@ -4,3 +4,4 @@
 android/build/build/
 android/build/.gradle/
 android/build/libs/
+tools/__pycache__/

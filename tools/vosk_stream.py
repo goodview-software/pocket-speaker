@@ -34,49 +34,6 @@ rec = KaldiRecognizer(Model(mdir), 16000)
 rec.SetWords(True)
 rec.SetPartialWords(True)
 
-# --- qui parle : empreinte de voix (modèle vosk-model-spk) comparée aux voix déjà entendues
-centroids = []  # [vecteur, nombre d'échantillons]
-cur_spk = 0
-try:
-    from vosk import SpkModel
-    spk_dir = os.path.join(os.path.dirname(mdir), "vosk-model-spk-0.4")
-    if os.path.isdir(spk_dir):
-        rec.SetSpkModel(SpkModel(spk_dir))
-except Exception:
-    pass
-
-def cosd(a, b):
-    return 1.0 - float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
-
-def speaker_of(r):
-    """Voix 0, 1, 2… : même voix si l'empreinte ressemble à une connue (distance cosinus < 0,5) ; nouvelle voix seulement si l'empreinte est fiable."""
-    global cur_spk
-    v = r.get("spk")
-    n = r.get("spk_frames", 0)
-    if not v:
-        return cur_spk
-    v = np.array(v, dtype=np.float64)
-    best, bd = -1, 9.0
-    for i, (c, k) in enumerate(centroids):
-        d = cosd(v, c)
-        if d < bd:
-            best, bd = i, d
-    if best < 0:
-        if n >= 40:
-            centroids.append([v, 1])
-            cur_spk = 0
-        return cur_spk
-    if bd < 0.5:
-        if n >= 60:
-            c, k = centroids[best]
-            centroids[best] = [(c * k + v) / (k + 1), min(k + 1, 20)]
-        cur_spk = best
-    elif n >= 100 and bd >= 0.6 and len(centroids) < 6:
-        centroids.append([v, 1])
-        cur_spk = len(centroids) - 1
-    elif bd < 0.75:
-        cur_spk = best
-    return cur_spk
 try:  # coupe plus vite sur les silences : des phrases courtes plutôt que des pavés
     from vosk import EndpointerMode
     rec.SetEndpointerMode(EndpointerMode.SHORT)
@@ -118,7 +75,6 @@ def block(part):
     global nblock
     nblock += 1
     print("\x07%d\x1f%s" % (nblock, part), flush=True)
-    print("\x0e%d\x1f%d" % (nblock, cur_spk), flush=True)  # qui a dit cette phrase
     if target:
         workq.put((nblock, part))
 
@@ -141,7 +97,6 @@ while True:
     m = m[: len(m) // STEP * STEP].reshape(-1, STEP).mean(axis=1).astype(np.int16)
     if rec.AcceptWaveform(m.tobytes()):
         r = _j.loads(rec.Result())
-        speaker_of(r)
         print("\x06", flush=True)
         last = ""
         words = (r.get("result") or [])[committed:]

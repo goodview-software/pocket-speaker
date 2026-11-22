@@ -9,12 +9,10 @@ const PORT := 5105
 const BEACON_PORT := PORT + 1  # téléphone -> réseau (UDP) : "POCKET"
 const RATE := 48000
 const PKG := "fr.goodview.pocketspeaker"
-const VERSION := 1001  # versionCode de l'APK
+const VERSION := 3  # versionCode de l'APK
 const KTok := preload("res://kit/tokens.gd")
 const KPx := preload("res://kit/ui/px.gd")
 const KPixelize := preload("res://kit/pixelize.gd")
-const LessonScript := preload("res://lesson.gd")
-const Room3DScript := preload("res://room3d.gd")
 const APP_VERSION: String = preload("res://version.gd").VERSION
 const T_AUDIO := 1  # PC -> téléphone : PCM s16 stéréo 48 kHz
 const T_MIC := 2  # téléphone -> PC : PCM s16 mono
@@ -174,29 +172,6 @@ class Icon extends Control:
 		Ico.draw_kind(self, kind, size / 2.0, minf(size.x, size.y) / 46.0, col)
 
 
-## Boîte pixel art à taille maîtrisée : cadre en escalier dessiné, contenu avec marges fixes.
-class PixBox extends MarginContainer:
-	var fill := Color(0.09, 0.11, 0.14)
-	var edge := Color(0.3, 0.88, 0.7, 0.8)
-	var tail_left := false  # bulle de dialogue : petite pointe en escalier vers la gauche (la mascotte)
-
-	func _init(f := Color(0.09, 0.11, 0.14), e := Color(0.3, 0.88, 0.7, 0.8), pad := 12) -> void:
-		fill = f
-		edge = e
-		for k in ["left", "right", "top", "bottom"]:
-			add_theme_constant_override("margin_" + k, pad)
-		texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-
-	func _draw() -> void:
-		KPx.panel(self, Rect2(Vector2.ZERO, size), fill, edge, false, 2)
-		if tail_left:
-			var cy := roundf(size.y * 0.5)
-			for i in 4:
-				var w := float((4 - i) * 4)
-				draw_rect(Rect2(-w + 2, cy - 8 + i * 4, w, 16 - i * 8), edge)
-				draw_rect(Rect2(-w + 4, cy - 6 + i * 4, w, 12 - i * 8), fill)
-
-
 class Seg extends Control:
 	signal picked(id: int)
 	var ids: Array = []
@@ -295,21 +270,11 @@ var pop_layer: Control
 var pop_word: Label
 var pop_text: Label
 var subs_sc: ScrollContainer
-var subs_rows: Container
-var blocks := {}  # id de bloc -> VBox
-var live_box: Control
-var land := false  # paysage : salle de classe, conférence en diaporama (lesson.gd)
-var lesson: Control
-var room3d: Node3D
-var mode3d := false
-var bg_n: ColorRect
-var hint_n: Label
-var chat_root_n: VBoxContainer
-var margin_n: Control
-var vbox_rows: VBoxContainer
-var block_data: Array = []  # [{id, text, trans}]
 var transcript: Array = []  # phrases entendues (contexte pour l'assistant)
-var live_lbl: Label  # mots en direct (hypothèse en cours), avant la fin de la phrase
+var tr_view: RichTextLabel  # texte continu : phrases terminées + mots en direct à la suite
+var block_data: Array = []  # [{id, text, trans}]
+var live_text := ""
+var tr_words := {}  # bloc -> mots cliquables
 var sub_delay := 0.0  # secondes de décalage du son (pour avoir le temps de lire)
 var delay_q: Array = []
 var sub_sched: Array = []  # groupes de mots en attente : [heure d'affichage ms, texte]
@@ -320,7 +285,6 @@ var sub_lag := 0.0  # retard moyen du texte par rapport à la parole (s)
 var ai_hist: Array = []
 const INTER := preload("res://kit/fonts/Inter-500.woff2")
 const PERSONA := "Tu es Goody, la mascotte de Pocket Speaker : un assistant généraliste, chaleureux et clair. Réponds court (2-4 phrases), dans la langue de l'utilisateur, sans markdown."
-var img_on := true  # photos Wikipédia (envoie seulement les noms cités)
 var src_i := 0  # langue parlée (Vosk) : 0 fr · 1 en · 2 es
 var sub_target := 0  # langue de traduction (index dans LANGS, 0 = aucune)
 var subs_target_run := -1
@@ -404,10 +368,8 @@ func _ready() -> void:
 	_load_pref()
 	KTok.set_pixel(true)
 	_build_ui()
-	if OS.get_environment("POCKET_DEMO") == "1":
+	if OS.get_environment("POCKET_DEMO") == "1":  # aperçu sans voix
 		_demo.call_deferred()
-	if OS.get_environment("POCKET_3D") == "1":
-		(func(): await get_tree().create_timer(2.0).timeout; want_subs = true; _set_3d(true)).call_deferred()
 	KPixelize.install(self)
 	if is_phone:
 		_phone_init()
@@ -427,7 +389,6 @@ func _start_updates() -> void:
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
-		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		_shutdown()
 		get_tree().quit()
 
@@ -488,7 +449,6 @@ func _load_pref() -> void:
 		want_subs = bool(cf.get_value("audio", "subs", false))
 		sub_target = int(cf.get_value("audio", "target", 0))
 		src_i = clampi(int(cf.get_value("audio", "src", 0)), 0, 2)
-		img_on = bool(cf.get_value("audio", "imgs", true))
 	if pin == "":
 		_new_pin()
 
@@ -510,7 +470,6 @@ func _save_pref() -> void:
 	cf.set_value("audio", "subs", want_subs)
 	cf.set_value("audio", "target", sub_target)
 	cf.set_value("audio", "src", src_i)
-	cf.set_value("audio", "imgs", img_on)
 	cf.set_value("audio", "delay", sub_delay)
 	cf.save("user://pref.cfg")
 
@@ -609,7 +568,6 @@ func _card(parent: Control) -> VBoxContainer:
 func _build_ui() -> void:
 	theme = _make_theme()
 	var bg := ColorRect.new()
-	bg_n = bg
 	bg.color = C_BG
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(bg)
@@ -630,7 +588,6 @@ func _build_ui() -> void:
 	var center := CenterContainer.new()
 	center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	margin.add_child(center)
-	margin_n = scroll
 	content = VBoxContainer.new()
 	content.add_theme_constant_override("separation", 16)
 	content.custom_minimum_size = Vector2(440, 0)
@@ -658,36 +615,18 @@ func _build_ui() -> void:
 	orb_row.add_theme_constant_override("separation", 22)
 	content.add_child(orb_row)
 	orb = Orb.new()
-	orb.custom_minimum_size = Vector2(0, 230)
+	orb.custom_minimum_size = Vector2(0, 200)
 	orb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	orb_row.add_child(orb)
-	live_box = PixBox.new(Color(0.03, 0.04, 0.06), Color(C_OK, 1.0), 12)
-	live_box.custom_minimum_size = Vector2(0, 150)  # taille fixe : ne se déforme jamais
-	live_box.tail_left = true
-	live_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	live_box.size_flags_stretch_ratio = 1.5
-	live_box.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	live_box.visible = want_subs
-	live_lbl = Label.new()
-	live_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	live_lbl.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
-	live_lbl.clip_text = true
-	live_lbl.add_theme_font_override("font", INTER)
-	live_lbl.add_theme_font_size_override("font_size", 26 if is_phone else 23)
-	live_lbl.add_theme_color_override("font_color", Color.WHITE)
-	live_lbl.add_theme_constant_override("line_spacing", 6)
-	live_lbl.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	live_box.add_child(live_lbl)
-	orb_row.add_child(live_box)
 	status = _label("", 22, C_TEXT, content)
 	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sub = _label("", 14, C_DIM, content)
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	sub.custom_minimum_size = Vector2(0, 40)
-	hint_n = _label("Personnage : appui = pause · double appui = reculer 5 s · appui long = paramètres", 13, C_IDLE, content)
-	hint_n.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	hint_n.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	var hint_l := _label("Personnage : appui = pause · double appui = reculer 5 s · appui long = paramètres", 13, C_IDLE, content)
+	hint_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint_l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 
 	# Paramètres : fenêtre ouverte par un appui long sur le personnage.
 	var main_content := content
@@ -837,26 +776,9 @@ func _build_ui() -> void:
 		opt_src.select(src_i)
 		opt_src.item_selected.connect(func(i: int):
 			src_i = i
-			lesson.lang = ["fr", "en", "es"][i]
 			_save_pref()
 			_pc_subs_sync())
 		r4b.add_child(opt_src)
-		var r4c := HBoxContainer.new()
-		r4c.add_theme_constant_override("separation", 14)
-		c4.add_child(r4c)
-		var l4c := _label("Images depuis internet (Wikipédia)", 16, C_TEXT, r4c)
-		l4c.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		var tg_img := Toggle.new()
-		tg_img.set_on(img_on)
-		tg_img.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		tg_img.toggled.connect(func(on: bool):
-			img_on = on
-			lesson.images_on = on
-			lesson._update_mini()
-			_save_pref())
-		r4c.add_child(tg_img)
-		var h4c := _label("Cherche la photo des personnes et lieux cités. Seuls les noms sont envoyés à Wikipédia.", 13, C_DIM, c4)
-		h4c.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 
 	if not is_phone:
 		var cph := _card(content)
@@ -885,9 +807,8 @@ func _build_ui() -> void:
 		content.add_child(seg)
 	content = main_content
 	var chat_root := VBoxContainer.new()
-	chat_root_n = chat_root
 	chat_root.set_anchors_preset(Control.PRESET_FULL_RECT)
-	chat_root.anchor_top = 0.45
+	chat_root.anchor_top = 0.52
 	chat_root.offset_left = 14
 	chat_root.offset_right = -14
 	chat_root.offset_bottom = -14
@@ -896,7 +817,7 @@ func _build_ui() -> void:
 	subs_sc = ScrollContainer.new()
 	subs_sc.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	subs_sc.size_flags_stretch_ratio = 2.0
-	subs_sc.custom_minimum_size = Vector2(0, 200)  # zone des blocs : taille minimale définie
+	subs_sc.custom_minimum_size = Vector2(0, 200)
 	subs_sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	var clr_row := HBoxContainer.new()
 	var clr_sp := Control.new()
@@ -906,34 +827,20 @@ func _build_ui() -> void:
 	clr_btn.text = "Effacer les paroles"
 	clr_btn.pressed.connect(_clear_subs)
 	clr_row.add_child(clr_btn)
-	var b3d := Button.new()
-	b3d.text = "Salle 3D (Tab)"
-	b3d.pressed.connect(func(): _set_3d(true))
-	clr_row.add_child(b3d)
 	chat_root.add_child(clr_row)
 	chat_root.add_child(subs_sc)
-	subs_rows = VBoxContainer.new()
-	subs_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	subs_rows.add_theme_constant_override("separation", 6)
-	subs_sc.add_child(subs_rows)
-	vbox_rows = subs_rows
-	lesson = LessonScript.new()
-	lesson.master = not is_phone
-	lesson.images_on = img_on
-	lesson.lang = ["fr", "en", "es"][src_i]
-	lesson.make_label = func(t: String, col: String, fs: int) -> Control:
-		var lw := []
-		return _sub_label(_linkify(t, col, lw), t, fs, lw)
-	lesson.slide_changed.connect(_on_slide)
-	lesson.keyword_changed.connect(func(id: int, kw: String):
-		if not is_phone and linked:
-			_send(T_TEXT, ("\u000c%d\u001f%s" % [id, kw]).to_utf8_buffer()))
-	lesson.graph_changed.connect(func(sid: int, payload: String):
-		if not is_phone and linked:
-			_send(T_TEXT, ("\u000b%d\u001f%s" % [sid, payload]).to_utf8_buffer().slice(0, 3000)))
-	lesson.visible = false
-	add_child(lesson)
-	move_child(lesson, 1)
+	tr_view = RichTextLabel.new()
+	tr_view.bbcode_enabled = true
+	tr_view.fit_content = true
+	tr_view.scroll_active = false
+	tr_view.meta_underlined = false
+	tr_view.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	tr_view.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tr_view.add_theme_font_override("normal_font", INTER)
+	tr_view.add_theme_font_size_override("normal_font_size", 26 if is_phone else 23)
+	tr_view.add_theme_constant_override("line_separation", 8)
+	tr_view.meta_clicked.connect(_on_word)
+	subs_sc.add_child(tr_view)
 	chat_sc = ScrollContainer.new()
 	chat_sc.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	chat_sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -1042,18 +949,10 @@ func _ui_tick(delta: float) -> void:
 	meter_mic.value = lvl_mic if want_mic else 0.0
 	var anim_n := "off"
 	if state == ST_LINKED:
-		anim_n = "happy" if maxf(lvl_out, lvl_mic) > 0.04 or (live_lbl != null and live_lbl.text != "") else "idle"
+		anim_n = "happy" if maxf(lvl_out, lvl_mic) > 0.04 or live_text != "" else "idle"
 	elif state == ST_WAIT:
 		anim_n = "wait"
 	orb.anim = anim_n
-	if live_box != null:
-		live_box.visible = want_subs
-		var vp := get_viewport_rect().size
-		var want_land := false  # mode paysage retiré (la salle 3D reste accessible avec Tab)
-		if want_land != land and chat_root_n != null and not mode3d:
-			_set_land(want_land)
-		if mode3d and room3d != null:
-			room3d.set_cast(lesson.spk_count, lesson.spk_cur, mascot, orb.anim, live_lbl.text)
 	orb.variant = mascot
 	orb.level = maxf(meter_out.shown, meter_mic.shown) if state == ST_LINKED else 0.0
 	var col: Color = [C_IDLE, C_WAIT, C_OK][state]
@@ -1837,62 +1736,33 @@ func _pc_pump_subs() -> void:
 		_bubble(line)
 
 
-## Aperçu sans voix (POCKET_DEMO=1) : une petite conférence qui arrive phrase par phrase ; POCKET_SHOT=fichier.png capture puis quitte.
 func _demo() -> void:
 	want_subs = true
-	var txt := ["Marie Curie est née à Varsovie en 1867.", "Elle a épousé Pierre Curie, un physicien français, en 1895.",
-		"Ensemble ils ont découvert le radium et le polonium à Paris.", "En 1903, ils reçoivent le prix Nobel de physique avec Henri Becquerel.",
-		"Pierre meurt dans un accident de la route en 1906.", "Marie obtient seule un second prix Nobel, de chimie, en 1911."]
-	for i in txt.size():
-		_add_block(i + 1, txt[i])
-		lesson.set_speaker(i + 1, i % 3)
-		await get_tree().create_timer(1.2).timeout
+	for i in 4:
+		_bubble("\u0007%d\u001f%s" % [i + 1, ["Bonjour tout le monde, bienvenue.", "Ceci est une phrase pour bien lire le texte.", "Les mots arrivent les uns à la suite des autres.", "Chaque phrase termin\u00e9e reste affichée au-dessus."][i]])
+	_bubble("\u0006les mots en cours de parole")
 	var shot := OS.get_environment("POCKET_SHOT")
 	if shot != "":
-		await get_tree().create_timer(25.0).timeout
+		await get_tree().create_timer(4.0).timeout
 		get_viewport().get_texture().get_image().save_png(shot)
 		get_tree().quit()
 
 
 func _clear_subs() -> void:
-	for c in subs_rows.get_children():
-		c.queue_free()
-	blocks.clear()
 	block_data.clear()
 	transcript.clear()
-	lesson.clear()
-	_set_live("")
+	live_text = ""
+	_render_text()
 
 
 func _set_live(t: String) -> void:
-	if live_lbl != null:
-		if lesson != null:
-			lesson.note_text(t)
-		live_lbl.text = t if t.length() <= 84 else "…" + t.substr(t.length() - 82)  # on garde la fin, la boîte reste fixe
+	live_text = t
+	_render_text()
 
 
 func _bubble(text: String) -> void:
 	if text.begins_with("\u0006"):
 		_set_live(text.substr(1))
-	elif text.begins_with("\u000e"):
-		var ks := text.find("\u001f")
-		if ks > 1:
-			lesson.set_speaker(text.substr(1, ks - 1).to_int(), text.substr(ks + 1).to_int())
-	elif text.begins_with("\u000c"):
-		var kc := text.find("\u001f")
-		if kc > 1:
-			lesson.apply_keyword(text.substr(1, kc - 1).to_int(), text.substr(kc + 1))
-	elif text.begins_with("\u000b"):
-		var kk := text.find("\u001f")
-		if kk > 1:
-			lesson.apply_graph(text.substr(1, kk - 1).to_int(), text.substr(kk + 1))
-	elif text.begins_with("\u0009"):
-		var parts := text.substr(1).split("\u001f")
-		if parts.size() >= 3:
-			var ids: Array = []
-			for x in parts[2].split(",", false):
-				ids.append(int(x))
-			lesson.apply_slide(int(parts[0]), parts[1], ids)
 	elif text.begins_with("\u0007") or text.begins_with("\u0008"):
 		var k := text.find("\u001f")
 		if k > 1:
@@ -1903,122 +1773,59 @@ func _bubble(text: String) -> void:
 				_set_trans(id, text.substr(k + 1))
 
 
-## Un bloc par phrase terminée (chronologique, le plus récent en bas) ; la traduction s'ajoute dessous quand elle arrive.
+## Une phrase terminée = un paragraphe ; la traduction s'ajoute dessous quand elle arrive.
 func _add_block(id: int, orig: String) -> void:
 	block_data.append({"id": id, "text": orig, "trans": ""})
-	while block_data.size() > 200:
+	while block_data.size() > 150:
 		block_data.pop_front()
 	transcript.append(orig)
 	while transcript.size() > 40:
 		transcript.pop_front()
-	_build_block(id, orig)
-	lesson.add_sentence(id, orig)
+	_render_text()
 
 
-func _build_block(id: int, orig: String) -> void:
-	if subs_rows == null:
+func _set_trans(id: int, t: String) -> void:
+	for d in block_data:
+		if d["id"] == id:
+			d["trans"] = t
+	_render_text()
+
+
+## Tout le texte d'un seul bloc : phrases en blanc (chaque mot cliquable = définition), traduction en jaune,
+## et les mots en cours de parole, en vert, juste à la suite.
+func _render_text() -> void:
+	if tr_view == null:
 		return
-	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 4)
-	var pc := PixBox.new(Color(0.04, 0.05, 0.07), Color(0.42, 0.5, 0.52), 14)
-	var tm2 := Label.new()
-	tm2.text = Time.get_time_string_from_system()
-	tm2.add_theme_font_size_override("font_size", 12)
-	tm2.add_theme_color_override("font_color", Color("9aa5b1"))
-	v.add_child(tm2)
-	pc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	pc.add_child(v)
-	var lw := []
-	v.add_child(_sub_label(_linkify(orig, "#ffffff", lw), orig, 26 if is_phone else 23, lw))
-	var at_end := subs_sc.scroll_vertical >= subs_sc.get_v_scroll_bar().max_value - subs_sc.size.y - 40
-	subs_rows.add_child(pc)
-	blocks[id] = v
-	var nb := subs_rows.get_child_count()
-	for i in nb:
-		subs_rows.get_child(i).modulate = Color(1, 1, 1, 1.0 if i >= nb - 1 else 0.6)
-	while subs_rows.get_child_count() > 200:
-		var old := subs_rows.get_child(0)
-		subs_rows.remove_child(old)
-		old.queue_free()
+	var at_end := subs_sc.scroll_vertical >= subs_sc.get_v_scroll_bar().max_value - subs_sc.size.y - 60
+	var bb := ""
+	for d in block_data:
+		var words := []
+		bb += _linkify(d["text"], "#ffffff", words, d["id"]) + "\n"
+		tr_words[d["id"]] = words
+		if d["trans"] != "":
+			bb += "[color=#ffd45e]" + _esc(d["trans"]) + "[/color]\n"
+		bb += "[font_size=8] [/font_size]\n"
+	if live_text != "":
+		bb += "[color=#4de1b4]" + _esc(live_text) + "[/color][color=#4de1b4] ▌[/color]"
+	tr_view.text = bb
 	if at_end:
 		await get_tree().process_frame
 		await get_tree().process_frame
 		subs_sc.scroll_vertical = int(subs_sc.get_v_scroll_bar().max_value)
 
 
-func _set_trans(id: int, t: String) -> void:
-	lesson.set_trans(id, t)
-	for d in block_data:
-		if d["id"] == id:
-			d["trans"] = t
-	_show_trans(id, t)
-
-
-func _show_trans(id: int, t: String) -> void:
-	if not blocks.has(id) or not is_instance_valid(blocks[id]):
+func _on_word(m: Variant) -> void:
+	var parts := str(m).split(":")
+	if parts.size() != 2:
 		return
-	var rw := []
-	blocks[id].add_child(_sub_label(_linkify(t, "#ffd45e", rw), t, 23 if is_phone else 20, rw))
-
-
-## Salle de classe 3D (style Doom) : Tab bascule entre la vue 2D et la salle.
-func _set_3d(on: bool) -> void:
-	if on == mode3d:
-		return
-	mode3d = on
-	if on:
-		if room3d == null:
-			room3d = Room3DScript.new()
-			add_child(room3d)
-		room3d.visible = true
-		room3d.process_mode = Node.PROCESS_MODE_INHERIT
-		lesson.attach_3d(room3d.board_vp, room3d.graph_vp, theme)
-		room3d.cam.current = true
-		bg_n.visible = false
-		margin_n.visible = false
-		chat_root_n.visible = false
-		lesson.visible = false
-	else:
-		lesson.detach_3d()
-		room3d.cam.current = false
-		room3d.visible = false
-		room3d.process_mode = Node.PROCESS_MODE_DISABLED
-		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-		bg_n.visible = true
-		margin_n.visible = true
-		chat_root_n.visible = true
-		lesson.visible = land
-
-
-func _input(e: InputEvent) -> void:
-	if e is InputEventKey and e.pressed and not e.echo and e.keycode == KEY_TAB and want_subs:
-		_set_3d(not mode3d)
-		get_viewport().set_input_as_handled()
-
-
-## Bascule portrait <-> paysage : en paysage, salle de classe + diaporama ; la zone d'assistant passe sous la mascotte.
-func _set_land(on: bool) -> void:
-	land = on
-	lesson.visible = on
-	subs_sc.visible = not on
-	status.visible = not on  # en paysage : la place sert au décor de la classe
-	sub.visible = not on
-	hint_n.visible = not on
-	if on:
-		chat_root_n.anchor_right = 0.34
-		chat_root_n.anchor_top = 0.62
-		margin_n.anchor_right = 0.34
-		live_box.custom_minimum_size.y = 120
-	else:
-		chat_root_n.anchor_right = 1.0
-		chat_root_n.anchor_top = 0.45
-		margin_n.anchor_right = 1.0
-		live_box.custom_minimum_size.y = 150
-
-
-func _on_slide(sid: int, title: String, ids: Array) -> void:
-	if not is_phone and linked:
-		_send(T_TEXT, ("\u0009%d\u001f%s\u001f%s" % [sid, title, ",".join(ids.map(func(i): return str(i)))]).to_utf8_buffer().slice(0, 1000))
+	var id := int(parts[0])
+	var wi := int(parts[1])
+	if tr_words.has(id) and wi < tr_words[id].size():
+		var sentence := ""
+		for d in block_data:
+			if d["id"] == id:
+				sentence = d["text"]
+		_explain(str(tr_words[id][wi]), sentence)
 
 
 func _sub_label(bb: String, plain: String, fs: int, words: Array) -> RichTextLabel:
@@ -2039,14 +1846,14 @@ func _sub_label(bb: String, plain: String, fs: int, words: Array) -> RichTextLab
 
 
 ## Chaque mot devient cliquable (définition). Les métas sont des index : une apostrophe dans [url=…] casserait le bbcode.
-func _linkify(t: String, col: String, words: Array) -> String:
+func _linkify(t: String, col: String, words: Array, bid := -1) -> String:
 	var out := "[color=" + col + "]"
 	var re := RegEx.create_from_string("[\\p{L}][\\p{L}\\p{N}'’-]*")
 	var p := 0
 	for m in re.search_all(t):
 		out += _esc(t.substr(p, m.get_start() - p))
 		words.append(m.get_string())
-		out += "[url=%d]%s[/url]" % [words.size() - 1, m.get_string()]
+		out += ("[url=%d:%d]%s[/url]" % [bid, words.size() - 1, m.get_string()]) if bid >= 0 else ("[url=%d]%s[/url]" % [words.size() - 1, m.get_string()])
 		p = m.get_end()
 	return out + _esc(t.substr(p)) + "[/color]"
 
