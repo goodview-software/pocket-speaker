@@ -1692,7 +1692,7 @@ func _pc_subs_sync() -> void:
 				return
 			var model := OS.get_environment("POCKET_WHISPER") if OS.get_environment("POCKET_WHISPER") != "" else "small"
 			var cmd := "python3"
-			var args := PackedStringArray([sc, model, "auto", LANGS[sub_target][0], "kid" if kid_mode else "0"])
+			var args := PackedStringArray([sc, model, "auto", ("none" if kid_mode else LANGS[sub_target][0]), "kid" if kid_mode else "0"])
 			if OS.get_environment("FLATPAK_ID") != "":  # le Python du sandbox n'a pas Whisper : on lance sur l'hôte
 				cmd = "flatpak-spawn"
 				args = PackedStringArray(["--host", "--watch-bus", "python3"]) + args
@@ -1792,7 +1792,7 @@ func _bubble(text: String) -> void:
 		body = text.substr(k + 1)
 	var parts := body.split("\u0002")
 	if kid_mode:
-		_add_kid(parts[0], parts[1] if parts.size() > 1 else "", dur)
+		_add_kid(parts[0], "", dur)
 	else:
 		_add_sub(parts[0], parts[1] if parts.size() > 1 else "")
 
