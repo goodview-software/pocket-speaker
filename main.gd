@@ -266,10 +266,6 @@ var tap_pending := -1.0
 var subs_card: Control
 var chat_sc: ScrollContainer
 var chat_in: LineEdit
-var kid_mode := false  # mode enfant : karaoké, phrases simples, grand texte
-var tog_kid: Toggle
-var kid_run := -1
-const LEXEND := preload("res://kit/fonts/Lexend.ttf")
 var pop_layer: Control
 var pop_word: Label
 var pop_text: Label
@@ -445,7 +441,6 @@ func _load_pref() -> void:
 		sub_target = int(cf.get_value("audio", "target", 0))
 		src_i = clampi(int(cf.get_value("audio", "src", 0)), 0, 2)
 		sub_delay = float(cf.get_value("audio", "delay", 0.0))
-		kid_mode = bool(cf.get_value("audio", "kid", false))
 	if pin == "":
 		_new_pin()
 
@@ -468,7 +463,6 @@ func _save_pref() -> void:
 	cf.set_value("audio", "target", sub_target)
 	cf.set_value("audio", "src", src_i)
 	cf.set_value("audio", "delay", sub_delay)
-	cf.set_value("audio", "kid", kid_mode)
 	cf.save("user://pref.cfg")
 
 
@@ -792,25 +786,6 @@ func _build_ui() -> void:
 	d5.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_delay_text()
 
-	var c6 := _card(content)
-	var r6 := HBoxContainer.new()
-	r6.add_theme_constant_override("separation", 14)
-	c6.add_child(r6)
-	var l6 := _label("Mode enfant (karaoké, mots simples)", 16, C_TEXT, r6)
-	l6.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	l6.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	tog_kid = Toggle.new()
-	tog_kid.set_on(kid_mode)
-	tog_kid.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	tog_kid.toggled.connect(func(on: bool):
-		kid_mode = on
-		_save_pref()
-		for c in subs_rows.get_children():
-			c.queue_free()
-		if not is_phone:
-			_pc_subs_sync()
-		_send_ctrl())
-	r6.add_child(tog_kid)
 
 	if not is_phone:
 		var cph := _card(content)
@@ -1071,7 +1046,7 @@ func _send(t: int, data: PackedByteArray) -> void:
 
 func _send_ctrl() -> void:
 	if linked:
-		_send(T_CTRL, PackedByteArray([1 if want_sound else 0, 1 if want_mic else 0, int(vol * 100.0), 1 if want_subs else 0, sub_target, int(sub_delay * 2.0), 1 if kid_mode else 0]))
+		_send(T_CTRL, PackedByteArray([1 if want_sound else 0, 1 if want_mic else 0, int(vol * 100.0), 1 if want_subs else 0, sub_target, int(sub_delay * 2.0), 0]))
 
 
 ## Lit les trames reçues ; retourne false si la connexion est perdue.
@@ -1115,11 +1090,6 @@ func _on_frame(t: int, pl: PackedByteArray) -> void:
 						sub_delay = pl[5] / 2.0
 						delay_slider.set_value_no_signal(sub_delay)
 						_delay_text()
-					if pl.size() >= 7 and (pl[6] == 1) != kid_mode:
-						kid_mode = pl[6] == 1
-						tog_kid.set_on(kid_mode)
-						for c in subs_rows.get_children():
-							c.queue_free()
 					if not is_phone:
 						_pc_subs_sync()
 				_apply_ctrl_ui()
@@ -1702,7 +1672,7 @@ func _subs_script() -> String:
 ## Démarre ou arrête Whisper selon « sous-titres » et l'état de la liaison.
 func _pc_subs_sync() -> void:
 	if want_subs and linked:
-		if subs_pid > 0 and subs_target_run != (sub_target * 2 + int(kid_mode)) * 4 + src_i:
+		if subs_pid > 0 and subs_target_run != sub_target * 4 + src_i:
 			_pc_subs_stop()
 		if subs_pid <= 0:
 			var sc := _subs_script()
@@ -1712,7 +1682,7 @@ func _pc_subs_sync() -> void:
 			var venv := OS.get_environment("HOME") + "/.local/share/pocket-speaker/venv/bin/python3"
 			if FileAccess.file_exists(venv):
 				cmd = venv
-			var args := PackedStringArray([sc, "_", ["fr", "en", "es"][src_i], ("none" if kid_mode else LANGS[sub_target][0]), "kid" if kid_mode else "0"])
+			var args := PackedStringArray([sc, "_", ["fr", "en", "es"][src_i], LANGS[sub_target][0], "0"])
 			if OS.get_environment("FLATPAK_ID") != "":  # le Python du sandbox n'a pas Whisper : on lance sur l'hôte
 				cmd = "flatpak-spawn"
 				args = PackedStringArray(["--host", "--watch-bus", venv if FileAccess.file_exists(venv) else "python3"]) + args
@@ -1721,7 +1691,7 @@ func _pc_subs_sync() -> void:
 				subs_pid = io["pid"]
 				subs_io = io["stdio"]
 				subs_ready = false
-				subs_target_run = (sub_target * 2 + int(kid_mode)) * 4 + src_i
+				subs_target_run = sub_target * 4 + src_i
 				th_subs = Thread.new()
 				th_subs.start(_subs_loop)
 	else:
@@ -1811,10 +1781,7 @@ func _bubble(text: String) -> void:
 		dur = text.substr(0, k).to_int()
 		body = text.substr(k + 1)
 	var parts := body.split("\u0002")
-	if kid_mode:
-		_add_kid(parts[0], "", dur)
-	else:
-		_add_sub(parts[0], parts[1] if parts.size() > 1 else "")
+	_add_sub(parts[0], parts[1] if parts.size() > 1 else "")
 
 
 ## Groupe de mots : original à gauche, traduction à droite ; les nouveaux arrivent en haut et font descendre les anciens.
@@ -1858,65 +1825,6 @@ func _add_sub(orig: String, trans: String) -> void:
 		subs_rows.remove_child(old)
 		old.queue_free()
 	subs_sc.scroll_vertical = 0
-
-
-## Mode enfant : grand groupe de mots au centre, le mot prononcé s'allume (karaoké).
-func _kid_bb(t: String, active: int) -> String:
-	var out := ""
-	var p := 0
-	var i := 0
-	for m in RegEx.create_from_string("[\\p{L}][\\p{L}\\p{N}'’-]*").search_all(t):
-		out += _esc(t.substr(p, m.get_start() - p))
-		var col := "#8892a0" if i > active else ("#ffd45e" if i == active else "#f2f5f9")
-		out += "[color=%s][url=%d]%s[/url][/color]" % [col, i, m.get_string()]
-		p = m.get_end()
-		i += 1
-	return out + _esc(t.substr(p))
-
-
-func _add_kid(orig: String, trans: String, dur_ms: int) -> void:
-	if subs_rows == null:
-		return
-	var fs := 36 if is_phone else 32
-	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 4)
-	var words: Array = []
-	for m in RegEx.create_from_string("[\\p{L}][\\p{L}\\p{N}'’-]*").search_all(orig):
-		words.append(m.get_string())
-	var l := RichTextLabel.new()
-	l.bbcode_enabled = true
-	l.fit_content = true
-	l.scroll_active = false
-	l.meta_underlined = false
-	l.custom_minimum_size.x = 60
-	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	l.add_theme_font_override("normal_font", LEXEND)
-	l.add_theme_font_size_override("normal_font_size", fs)
-	l.text = "[center]" + _kid_bb(orig, 0) + "[/center]"
-	l.meta_clicked.connect(func(m: Variant): _explain(str(words[int(str(m))]), orig))
-	box.add_child(l)
-	if trans != "":
-		var tw_words: Array = []
-		var lt := _sub_label("[center]" + _linkify(trans, "#4de1b4", tw_words) + "[/center]", trans, int(fs * 0.8), tw_words)
-		lt.add_theme_font_override("normal_font", LEXEND)
-		box.add_child(lt)
-	subs_rows.add_child(box)
-	for i in subs_rows.get_child_count():
-		subs_rows.get_child(i).modulate.a = 1.0 if i == subs_rows.get_child_count() - 1 else 0.4
-	while subs_rows.get_child_count() > 3:
-		var old := subs_rows.get_child(0)
-		subs_rows.remove_child(old)
-		old.queue_free()
-	var n := maxi(1, words.size())
-	var tw := box.create_tween()
-	for i in range(1, n):
-		tw.tween_interval(dur_ms / 1000.0 / n)
-		tw.tween_callback(func(): if is_instance_valid(l): l.text = "[center]" + _kid_bb(orig, i) + "[/center]")
-	tw.tween_interval(dur_ms / 1000.0 / n)
-	tw.tween_callback(func(): if is_instance_valid(l): l.text = "[center]" + _kid_bb(orig, n) + "[/center]")
-	await get_tree().process_frame
-	await get_tree().process_frame
-	subs_sc.scroll_vertical = int(subs_sc.get_v_scroll_bar().max_value)
 
 
 func _sub_label(bb: String, plain: String, fs: int, words: Array) -> RichTextLabel:
@@ -2021,10 +1929,7 @@ func _explain(word: String, sentence: String) -> void:
 	pop_word.text = word
 	pop_text.text = "…"
 	pop_layer.visible = true
-	if kid_mode:
-		_ask("Explique le mot « %s » (dans la phrase « %s ») à un enfant de 8 ans, en une seule phrase très simple en français. Commence par un emoji qui représente le mot.%s" % [word, sentence, extra], 2)
-	else:
-		_ask("Définis le mot « %s » tel qu'il est utilisé dans la phrase « %s ». Donne d'abord la définition en français (1 à 2 phrases), puis un court exemple.%s" % [word, sentence, extra], 2)
+	_ask("Définis le mot « %s » tel qu'il est utilisé dans la phrase « %s ». Donne d'abord la définition en français (1 à 2 phrases), puis un court exemple.%s" % [word, sentence, extra], 2)
 
 
 func _ask(text: String, mode: int) -> void:

@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 """Sous-titres en direct (Vosk, flux continu) : lit du PCM s16le stéréo 48 kHz sur stdin ; écrit « \x06mots en cours » pendant que ça parle,
 puis une ligne minutée par groupe de mots à la fin de la phrase.
-Usage : vosk_stream.py _ [langue=fr|en|es] [traduction=none|es|en|fr|de|it|pt] [kid|0]  (1er argument ignoré, compatibilité)
+Usage : vosk_stream.py _ [langue=fr|en|es] [traduction=none|es|en|fr|de|it|pt]  (1er argument ignoré, compatibilité)
 Sortie : « texte » ou « texte\x02traduction » (traduction via Ollama, gemma3:4b)."""
 import sys, os, re, time, json, threading, queue, urllib.request
 import numpy as np
@@ -10,7 +10,6 @@ from vosk import Model, KaldiRecognizer, SetLogLevel
 
 model_name = sys.argv[1] if len(sys.argv) > 1 else "small"
 lang = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] in ("fr", "en", "es") else "fr"
-kid = len(sys.argv) > 4 and sys.argv[4] == "kid"
 target = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] != "none" else None
 NAMES = {"es": "espagnol", "en": "anglais", "fr": "français", "de": "allemand", "it": "italien", "pt": "portugais"}
 OLLAMA = os.environ.get("POCKET_OLLAMA", "http://127.0.0.1:11434")
@@ -25,17 +24,6 @@ def translate(t):
         return out if out and out.lower() != t.lower() else None
     except Exception:
         return None
-
-def simplify(t):
-    """Mode enfant : reformule avec des mots très simples (même sens, même langue)."""
-    body = {"model": TMODEL, "stream": False, "keep_alive": "30m", "options": {"num_predict": 120, "temperature": 0},
-            "prompt": "Réécris cette phrase avec des mots très simples, pour un enfant de 8 ans. Garde le même sens et la même langue. Phrase courte. Réponds uniquement par la phrase.\n\n" + t}
-    try:
-        rq = urllib.request.Request(OLLAMA + "/api/generate", json.dumps(body).encode(), {"Content-Type": "application/json"})
-        out = json.load(urllib.request.urlopen(rq, timeout=20))["response"].strip().split("\n")[0]
-        return out or t
-    except Exception:
-        return t
 
 def chunks(t, n=5):
     """Découpe une phrase en groupes de 2 à n mots (sur la ponctuation, puis par taille)."""
@@ -82,10 +70,7 @@ def emit(words, text):
     t = text.strip()
     if not t or BAD.search(t):
         return
-    if kid:
-        t = simplify(t)
-        words = []
-    chs = chunks(t, 4 if kid else 5)
+    chs = chunks(t, 5)
     trs = translate_chunks(t, chs) if target else [None] * len(chs)
     idx = 0
     n_all = max(1, sum(len(c.split()) for c in chs))
