@@ -8,6 +8,7 @@ import whisper
 
 model_name = sys.argv[1] if len(sys.argv) > 1 else "small"
 lang = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] != "auto" else None
+kid = len(sys.argv) > 4 and sys.argv[4] == "kid"
 target = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] != "none" else None
 NAMES = {"es": "espagnol", "en": "anglais", "fr": "français", "de": "allemand", "it": "italien", "pt": "portugais"}
 OLLAMA = os.environ.get("POCKET_OLLAMA", "http://127.0.0.1:11434")
@@ -31,6 +32,17 @@ RATE, STEP = 48000, 3          # 48 kHz -> 16 kHz
 WIN = 1600                     # fenêtres d'énergie de 100 ms (à 16 kHz)
 MAX_S, MIN_S, SIL_S = 6.0, 0.6, 0.35
 total16 = 0  # échantillons 16 kHz lus depuis le début du flux (horloge du flux)
+def simplify(t):
+    """Mode enfant : reformule avec des mots très simples (même sens, même langue)."""
+    body = {"model": TMODEL, "stream": False, "keep_alive": "30m", "options": {"num_predict": 120, "temperature": 0},
+            "prompt": "Réécris cette phrase avec des mots très simples, pour un enfant de 8 ans. Garde le même sens et la même langue. Phrase courte. Réponds uniquement par la phrase.\n\n" + t}
+    try:
+        rq = urllib.request.Request(OLLAMA + "/api/generate", json.dumps(body).encode(), {"Content-Type": "application/json"})
+        out = json.load(urllib.request.urlopen(rq, timeout=20))["response"].strip().split("\n")[0]
+        return out or t
+    except Exception:
+        return t
+
 def chunks(t, n=5):
     """Découpe une phrase en groupes de 2 à n mots (sur la ponctuation, puis par taille)."""
     parts = [p.strip() for p in re.findall(r"[^,;:.!?…]+[,;:.!?…]*", t) if p.strip()]
@@ -92,14 +104,24 @@ def flush(a):
     for s in r["segments"]:
         t = s["text"].strip()
         if t and s["no_speech_prob"] < 0.6 and not BAD.search(t):
-            chs = chunks(t)
             words = s.get("words") or []
+            if kid:
+                t = simplify(t)
+                words = []  # le texte n'est plus celui de Whisper : minutage réparti sur la phrase
+            chs = chunks(t, 4 if kid else 5)
             trs = translate_chunks(t, chs) if target else [None] * len(chs)
             idx = 0
+            nw = max(1, sum(len(c.split()) for c in chs))
+            seg_s, seg_e = s["start"], s["end"]
             for c, tr in zip(chs, trs):
-                st = words[min(idx, len(words) - 1)]["start"] if words else s["start"]
+                if words:
+                    st = words[min(idx, len(words) - 1)]["start"]
+                    en = words[min(idx + len(c.split()), len(words)) - 1]["end"]
+                else:
+                    st = seg_s + (seg_e - seg_s) * idx / nw
+                    en = seg_s + (seg_e - seg_s) * (idx + len(c.split())) / nw
                 idx += len(c.split())
-                print("%.2f\x03%s" % (base + st, c) + ("\x02" + tr.replace("\n", " ") if tr else ""), flush=True)
+                print("%.2f,%.2f\x03%s" % (base + st, base + en, c) + ("\x02" + tr.replace("\n", " ") if tr else ""), flush=True)
 
 threading.Thread(target=reader, daemon=True).start()
 while True:
