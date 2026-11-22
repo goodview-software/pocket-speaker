@@ -427,6 +427,7 @@ func _start_updates() -> void:
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		_shutdown()
 		get_tree().quit()
 
@@ -1052,7 +1053,7 @@ func _ui_tick(delta: float) -> void:
 		if want_land != land and chat_root_n != null and not mode3d:
 			_set_land(want_land)
 		if mode3d and room3d != null:
-			room3d.set_mascot(orb.anim, mascot, live_lbl.text)
+			room3d.set_cast(lesson.spk_count, lesson.spk_cur, mascot, orb.anim, live_lbl.text)
 	orb.variant = mascot
 	orb.level = maxf(meter_out.shown, meter_mic.shown) if state == ST_LINKED else 0.0
 	var col: Color = [C_IDLE, C_WAIT, C_OK][state]
@@ -1844,6 +1845,7 @@ func _demo() -> void:
 		"Pierre meurt dans un accident de la route en 1906.", "Marie obtient seule un second prix Nobel, de chimie, en 1911."]
 	for i in txt.size():
 		_add_block(i + 1, txt[i])
+		lesson.set_speaker(i + 1, i % 3)
 		await get_tree().create_timer(1.2).timeout
 	var shot := OS.get_environment("POCKET_SHOT")
 	if shot != "":
@@ -1872,6 +1874,10 @@ func _set_live(t: String) -> void:
 func _bubble(text: String) -> void:
 	if text.begins_with("\u0006"):
 		_set_live(text.substr(1))
+	elif text.begins_with("\u000e"):
+		var ks := text.find("\u001f")
+		if ks > 1:
+			lesson.set_speaker(text.substr(1, ks - 1).to_int(), text.substr(ks + 1).to_int())
 	elif text.begins_with("\u000c"):
 		var kc := text.find("\u001f")
 		if kc > 1:

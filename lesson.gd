@@ -45,6 +45,8 @@ var _img_asked := {}
 var _img_queue: Array = []
 var _img_busy := 0
 var lang := "fr"
+var spk_count := 1  # nombre de voix détectées
+var spk_cur := 0  # voix qui parle en ce moment
 var expanded := {}  # id -> phrase complète dépliée
 var current_name := ""  # entité dont on parle en ce moment (cadre en haut à droite du tableau)
 var current_kind := "personne"
@@ -367,6 +369,8 @@ class Card extends MarginContainer:
 
 func clear() -> void:
 	entity_count.clear()
+	spk_count = 1
+	spk_cur = 0
 	if _mini != null:
 		_mini.set_graph([], [])
 	_ex_pending.clear()
@@ -549,7 +553,7 @@ func _render(anim: bool) -> void:
 		if not blocks.has(id):
 			continue
 		var b: Dictionary = blocks[id]
-		var c := Color(POSTIT[int(id) % POSTIT.size()])
+		var c := Color(POSTIT[(int(b.get("spk", id)) if spk_count > 1 else int(id)) % POSTIT.size()])
 		var card := Card.new(c, c.darkened(0.42), 10)
 		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		card.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
@@ -562,7 +566,7 @@ func _render(anim: bool) -> void:
 		v.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		card.add_child(v)
 		var num := Label.new()
-		num.text = "%d" % (k + 1)
+		num.text = ("%d  ·  Voix %d" % [k + 1, int(b.get("spk", 0)) + 1]) if spk_count > 1 else "%d" % (k + 1)
 		num.add_theme_font_size_override("font_size", 13)
 		num.add_theme_color_override("font_color", Color(0, 0, 0, 0.5))
 		num.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1015,3 +1019,12 @@ func detach_3d() -> void:
 	_place_mini()
 	queue_redraw()
 	_refresh()
+
+
+## Qui a dit cette phrase (voix 0, 1, 2…), détecté côté PC par l'empreinte de voix.
+func set_speaker(id: int, spk: int) -> void:
+	spk_cur = spk
+	spk_count = maxi(spk_count, spk + 1)
+	if blocks.has(id):
+		blocks[id]["spk"] = spk
+		_render(false)

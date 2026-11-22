@@ -26,6 +26,8 @@ var variant := 0
 var _t := 0.0
 var _boards: Array = []  # {xf: Transform3D, size: Vector2, vp: SubViewport}
 var _hint: Label
+var _cast: Array = []  # {sp, lb, anim, var} : une mascotte par voix
+const SLOTS := [Vector3(2.0, 0.9, -3.4), Vector3(0.4, 0.9, -3.4), Vector3(-1.2, 0.9, -3.4), Vector3(3.6, 0.9, -3.4), Vector3(-2.8, 0.9, -3.4), Vector3(5.2, 0.9, -3.4)]
 
 
 func _ready() -> void:
@@ -275,6 +277,7 @@ func _build_mascot() -> void:
 	bubble.modulate = Color.WHITE
 	bubble.no_depth_test = true
 	add_child(bubble)
+	_cast.append({"sp": mascot, "lb": bubble, "anim": "idle", "var": 0})
 
 
 func _build_player() -> void:
@@ -309,18 +312,71 @@ func _build_hud() -> void:
 
 # ------------------------------------------------------------------ boucle
 
+func _new_mascot(k: int) -> void:
+	var sp := Sprite3D.new()
+	sp.texture = SHEET
+	sp.region_enabled = true
+	sp.region_rect = Rect2(0, 0, 32, 32)
+	sp.pixel_size = 0.045
+	sp.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y
+	sp.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	sp.alpha_cut = SpriteBase3D.ALPHA_CUT_DISCARD
+	sp.shaded = false
+	sp.position = SLOTS[k]
+	add_child(sp)
+	var lb := Label3D.new()
+	lb.position = SLOTS[k] + Vector3(0, 1.05, 0)
+	lb.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	lb.pixel_size = 0.0032
+	lb.font_size = 40
+	lb.width = 520
+	lb.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	lb.outline_size = 10
+	lb.outline_modulate = Color(0.03, 0.04, 0.06)
+	lb.no_depth_test = true
+	lb.visible = false
+	add_child(lb)
+	_cast.append({"sp": sp, "lb": lb, "anim": "idle", "var": 0})
+
+
+## n voix détectées : une mascotte chacune ; celle qui parle (cur) s'anime et affiche ce qui se dit.
+func set_cast(n: int, cur: int, base_variant: int, a: String, live: String) -> void:
+	n = clampi(n, 1, SLOTS.size())
+	while _cast.size() < n:
+		_new_mascot(_cast.size())
+	for k in _cast.size():
+		var c: Dictionary = _cast[k]
+		c["sp"].visible = k < n
+		c["var"] = (base_variant + k * 3) % 8
+		var speaking := k == cur
+		c["anim"] = (a if ANIMS.has(a) else "idle") if speaking else "idle"
+		c["lb"].text = live if speaking else ""
+		c["lb"].visible = speaking and live != ""
+
+
 func set_mascot(a: String, v: int, live: String) -> void:
-	anim = a if ANIMS.has(a) else "idle"
-	variant = v
-	bubble.text = live
-	bubble.visible = live != ""
+	set_cast(1, 0, v, a, live)
+
+
+func _release_mouse() -> void:
+	look_held = false
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
+func _notification(what: int) -> void:
+	# la souris n'est JAMAIS gardée : perte de focus, sortie de la salle ou fermeture la rendent
+	if what == NOTIFICATION_WM_WINDOW_FOCUS_OUT or what == NOTIFICATION_APPLICATION_FOCUS_OUT or what == NOTIFICATION_EXIT_TREE or what == NOTIFICATION_VISIBILITY_CHANGED:
+		_release_mouse()
 
 
 func _process(d: float) -> void:
+	if look_held and not Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
+		_release_mouse()  # bouton relâché hors de la fenêtre : on rend la souris
 	_t += d
-	var row: int = ANIMS[anim][0] + variant * 5
-	var n: int = ANIMS[anim][1]
-	mascot.region_rect = Rect2((int(_t * 3.0) % n) * 32, row * 32, 32, 32)
+	for c in _cast:
+		var row: int = ANIMS[c["anim"]][0] + int(c["var"]) * 5
+		var n: int = ANIMS[c["anim"]][1]
+		(c["sp"] as Sprite3D).region_rect = Rect2((int(_t * 3.0) % n) * 32, row * 32, 32, 32)
 	var t := Time.get_time_dict_from_system()
 	clock_lbl.text = "%02d:%02d" % [t["hour"], t["minute"]]
 
@@ -339,9 +395,15 @@ func _physics_process(d: float) -> void:
 
 
 func _input(e: InputEvent) -> void:
+	if e is InputEventKey and e.pressed and e.keycode == KEY_ESCAPE:
+		_release_mouse()
+		return
 	if e is InputEventMouseButton and e.button_index == MOUSE_BUTTON_RIGHT:
-		look_held = e.pressed
-		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if e.pressed else Input.MOUSE_MODE_VISIBLE
+		if e.pressed:
+			look_held = true
+			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		else:
+			_release_mouse()
 		return
 	if e is InputEventMouseMotion and look_held:
 		yaw -= e.relative.x * 0.003
