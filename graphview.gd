@@ -23,6 +23,7 @@ var images: Dictionary = {}  # nom (minuscule) -> Texture2D (photo Wikipédia)
 signal node_clicked(name: String, kind: String)
 var manual := {}  # nom (minuscule) -> position normalisée posée à la main (glisser-déposer)
 var selected := ""
+var framed := false  # dessine son propre tableau vert (affichage sur un mur 3D)
 var pan := Vector2.ZERO
 var zoom := 1.0
 var _rects: Array = []
@@ -106,6 +107,8 @@ func _edge_point(r: Rect2, toward: Vector2) -> Vector2:
 
 
 func _draw() -> void:
+	if framed:
+		KPx.panel(self, Rect2(Vector2.ZERO, size), Color("14352c"), Color("a9743f"), false, 2)
 	if entities.is_empty():
 		return
 	draw_set_transform(pan, 0.0, Vector2(zoom, zoom))

@@ -14,6 +14,7 @@ const KTok := preload("res://kit/tokens.gd")
 const KPx := preload("res://kit/ui/px.gd")
 const KPixelize := preload("res://kit/pixelize.gd")
 const LessonScript := preload("res://lesson.gd")
+const Room3DScript := preload("res://room3d.gd")
 const APP_VERSION: String = preload("res://version.gd").VERSION
 const T_AUDIO := 1  # PC -> téléphone : PCM s16 stéréo 48 kHz
 const T_MIC := 2  # téléphone -> PC : PCM s16 mono
@@ -299,6 +300,9 @@ var blocks := {}  # id de bloc -> VBox
 var live_box: Control
 var land := false  # paysage : salle de classe, conférence en diaporama (lesson.gd)
 var lesson: Control
+var room3d: Node3D
+var mode3d := false
+var bg_n: ColorRect
 var hint_n: Label
 var chat_root_n: VBoxContainer
 var margin_n: Control
@@ -402,6 +406,8 @@ func _ready() -> void:
 	_build_ui()
 	if OS.get_environment("POCKET_DEMO") == "1":
 		_demo.call_deferred()
+	if OS.get_environment("POCKET_3D") == "1":
+		(func(): await get_tree().create_timer(2.0).timeout; want_subs = true; _set_3d(true)).call_deferred()
 	KPixelize.install(self)
 	if is_phone:
 		_phone_init()
@@ -602,6 +608,7 @@ func _card(parent: Control) -> VBoxContainer:
 func _build_ui() -> void:
 	theme = _make_theme()
 	var bg := ColorRect.new()
+	bg_n = bg
 	bg.color = C_BG
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(bg)
@@ -898,6 +905,10 @@ func _build_ui() -> void:
 	clr_btn.text = "Effacer les paroles"
 	clr_btn.pressed.connect(_clear_subs)
 	clr_row.add_child(clr_btn)
+	var b3d := Button.new()
+	b3d.text = "Salle 3D (Tab)"
+	b3d.pressed.connect(func(): _set_3d(true))
+	clr_row.add_child(b3d)
 	chat_root.add_child(clr_row)
 	chat_root.add_child(subs_sc)
 	subs_rows = VBoxContainer.new()
@@ -1038,8 +1049,10 @@ func _ui_tick(delta: float) -> void:
 		live_box.visible = want_subs
 		var vp := get_viewport_rect().size
 		var want_land := vp.x > vp.y * 1.2 and want_subs and chat_root_n != null
-		if want_land != land and chat_root_n != null:
+		if want_land != land and chat_root_n != null and not mode3d:
 			_set_land(want_land)
+		if mode3d and room3d != null:
+			room3d.set_mascot(orb.anim, mascot, live_lbl.text)
 	orb.variant = mascot
 	orb.level = maxf(meter_out.shown, meter_mic.shown) if state == ST_LINKED else 0.0
 	var col: Color = [C_IDLE, C_WAIT, C_OK][state]
@@ -1940,6 +1953,41 @@ func _show_trans(id: int, t: String) -> void:
 		return
 	var rw := []
 	blocks[id].add_child(_sub_label(_linkify(t, "#ffd45e", rw), t, 23 if is_phone else 20, rw))
+
+
+## Salle de classe 3D (style Doom) : Tab bascule entre la vue 2D et la salle.
+func _set_3d(on: bool) -> void:
+	if on == mode3d:
+		return
+	mode3d = on
+	if on:
+		if room3d == null:
+			room3d = Room3DScript.new()
+			add_child(room3d)
+		room3d.visible = true
+		room3d.process_mode = Node.PROCESS_MODE_INHERIT
+		lesson.attach_3d(room3d.board_vp, room3d.graph_vp, theme)
+		room3d.cam.current = true
+		bg_n.visible = false
+		margin_n.visible = false
+		chat_root_n.visible = false
+		lesson.visible = false
+	else:
+		lesson.detach_3d()
+		room3d.cam.current = false
+		room3d.visible = false
+		room3d.process_mode = Node.PROCESS_MODE_DISABLED
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		bg_n.visible = true
+		margin_n.visible = true
+		chat_root_n.visible = true
+		lesson.visible = land
+
+
+func _input(e: InputEvent) -> void:
+	if e is InputEventKey and e.pressed and not e.echo and e.keycode == KEY_TAB and want_subs:
+		_set_3d(not mode3d)
+		get_viewport().set_input_as_handled()
 
 
 ## Bascule portrait <-> paysage : en paysage, salle de classe + diaporama ; la zone d'assistant passe sous la mascotte.

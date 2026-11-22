@@ -34,6 +34,9 @@ var _strip: HBoxContainer
 var _strip_sc: ScrollContainer
 var _btn_live: Button
 var _empty: Label
+var _col: VBoxContainer  # colonne du grand tableau (réutilisée sur le mur 3D)
+var in3d := false
+var _col_anchors := {}
 var _mini: Control  # mini-tableau des entités (à gauche, au-dessus du bureau)
 var _pics: HBoxContainer  # cadres photo de la diapo
 var images_on := true
@@ -66,6 +69,7 @@ func _init() -> void:
 
 func _ready() -> void:
 	var col := VBoxContainer.new()
+	_col = col
 	col.anchor_left = 0.36
 	col.anchor_right = 1.0
 	col.anchor_top = 0.0
@@ -211,7 +215,7 @@ func _mini_rect() -> Rect2:
 
 
 func _place_mini() -> void:
-	if _mini != null:
+	if _mini != null and not in3d:
 		var r := _mini_rect()
 		_mini.position = r.position
 		_mini.size = r.size
@@ -959,3 +963,55 @@ func _update_talk() -> void:
 	var tex: Variant = images.get(current_name.to_lower(), null)
 	_talk_tex.texture = tex
 	_talk_tex.visible = tex != null
+
+
+# ------------------------------------------------------------------ salle 3D : les tableaux deviennent des écrans sur les murs
+
+func attach_3d(vpb: SubViewport, vpg: SubViewport, th: Theme) -> void:
+	if in3d:
+		return
+	in3d = true
+	_col_anchors = {"l": _col.anchor_left, "r": _col.anchor_right, "t": _col.anchor_top, "b": _col.anchor_bottom,
+		"ol": _col.offset_left, "or": _col.offset_right, "ot": _col.offset_top, "ob": _col.offset_bottom}
+	remove_child(_col)
+	vpb.add_child(_col)
+	_col.theme = th
+	_col.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_col.offset_left = 18
+	_col.offset_right = -18
+	_col.offset_top = 14
+	_col.offset_bottom = -12
+	remove_child(_mini)
+	vpg.add_child(_mini)
+	_mini.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_mini.offset_left = 0
+	_mini.offset_right = 0
+	_mini.offset_top = 0
+	_mini.offset_bottom = 0
+	_mini.framed = true
+	_mini.queue_redraw()
+	_refresh()
+
+
+func detach_3d() -> void:
+	if not in3d:
+		return
+	in3d = false
+	_col.get_parent().remove_child(_col)
+	add_child(_col)
+	_col.theme = null
+	_col.anchor_left = _col_anchors["l"]
+	_col.anchor_right = _col_anchors["r"]
+	_col.anchor_top = _col_anchors["t"]
+	_col.anchor_bottom = _col_anchors["b"]
+	_col.offset_left = _col_anchors["ol"]
+	_col.offset_right = _col_anchors["or"]
+	_col.offset_top = _col_anchors["ot"]
+	_col.offset_bottom = _col_anchors["ob"]
+	_mini.get_parent().remove_child(_mini)
+	add_child(_mini)
+	_mini.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	_mini.framed = false
+	_place_mini()
+	queue_redraw()
+	_refresh()
