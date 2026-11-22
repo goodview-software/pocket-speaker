@@ -103,6 +103,9 @@ def flush(a):
                          condition_on_previous_text=False, word_timestamps=True, no_speech_threshold=0.5,
                          compression_ratio_threshold=2.2, logprob_threshold=-1.0)
     base = (total16 - len(a)) / 16000.0  # début du tampon dans l'horloge du flux
+    workq.put((r, base))
+
+def emit(r, base):
     for s in r["segments"]:
         t = s["text"].strip()
         if t and s["no_speech_prob"] < 0.6 and not BAD.search(t):
@@ -125,6 +128,15 @@ def flush(a):
                 idx += len(c.split())
                 print("%.2f,%.2f\x03%s" % (base + st, base + en, c) + ("\x02" + tr.replace("\n", " ") if tr else ""), flush=True)
 
+workq = queue.Queue()
+def worker():  # traduction / simplification hors de la boucle audio : les mots en direct ne sont jamais bloqués
+    while True:
+        r, base = workq.get()
+        try:
+            emit(r, base)
+        except Exception:
+            pass
+threading.Thread(target=worker, daemon=True).start()
 threading.Thread(target=reader, daemon=True).start()
 while True:
     raw = qq.get()
