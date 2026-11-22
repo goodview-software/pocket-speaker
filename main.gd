@@ -1237,7 +1237,7 @@ func _phone_scan() -> void:
 	var now := Time.get_ticks_msec()
 	while lan.get_available_packet_count() > 0:
 		var txt := lan.get_packet().get_string_from_utf8()
-		var ip := lan.get_packet_ip()
+		var ip := lan.get_packet_ip().trim_prefix("::ffff:")
 		if txt.begins_with("PC|"):
 			pcs[ip] = {"name": txt.substr(3), "t": now}
 	for k in pcs.keys():
@@ -1320,7 +1320,8 @@ func _pc_init() -> void:
 			var id := line.split("\t")[0]
 			if id.is_valid_int():
 				_pa(["unload-module", id])
-	lan.bind(BEACON_PORT)
+	if lan.bind(BEACON_PORT) != OK:  # une autre copie de l'app garde déjà le port : on prévient au lieu de rester sourd
+		_notice.call_deferred("Pocket Speaker est déjà ouvert (une autre fenêtre ou copie installée). Ferme-la, puis relance.")
 	beacon.set_broadcast_enabled(true)
 	beacon.set_dest_address("255.255.255.255", BEACON_PORT)
 	th_adb = Thread.new()
@@ -1537,6 +1538,13 @@ func _pc_connect_to(key: String, nm: String) -> void:
 	_save_pref()
 
 
+## Message bloquant avec un seul bouton (ex. app déjà ouverte) : on quitte pour laisser la bonne copie travailler.
+func _notice(text: String) -> void:
+	_ask_pair(text, func(): get_tree().quit(), func(): get_tree().quit())
+	ask_yes.text = "Quitter"
+	ask_no.visible = false
+
+
 ## Popup « Accepter / Refuser » (demande de pairing reçue).
 func _ask_pair(text: String, yes: Callable, no: Callable) -> void:
 	if ask_layer == null:
@@ -1571,6 +1579,8 @@ func _ask_pair(text: String, yes: Callable, no: Callable) -> void:
 		for cn in sg.get_connections():
 			sg.disconnect(cn["callable"])
 	ask_lbl.text = text
+	ask_yes.text = "Accepter"
+	ask_no.visible = true
 	ask_yes.pressed.connect(func():
 		ask_layer.visible = false
 		yes.call())
@@ -1585,7 +1595,7 @@ func _pc_scan() -> void:
 	var now := Time.get_ticks_msec()
 	while lan.get_available_packet_count() > 0:
 		var txt := lan.get_packet().get_string_from_utf8()
-		var ip := lan.get_packet_ip()
+		var ip := lan.get_packet_ip().trim_prefix("::ffff:")
 		if txt.begins_with("POCKET"):
 			var nm := txt.substr(7) if txt.length() > 7 else "Téléphone"
 			phones[ip] = {"name": nm, "ip": ip, "t": now}
