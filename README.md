@@ -12,6 +12,6 @@ Mascotte : la variante choisie dans le Goodview Launcher (profil partagé `~/.co
 
 Note : sur le Wi-Fi, le téléphone accepte toute connexion entrante (pas d'appairage pour l'instant).
 
-**Sous-titres (Whisper)** : le bouton « Sous-titres en bulles » (PC ou téléphone) lance `tools/whisper_stream.py` (openai-whisper, GPU si dispo, modèle `small`, `POCKET_WHISPER=medium` pour changer) sur le son du PC et affiche en bulles, sur l'écran du téléphone, ce qui est compris (langue détectée automatiquement). Le son doit passer par Pocket Speaker (« Son » activé). Prérequis : `python3` avec `openai-whisper`.
+**Sous-titres en direct (Vosk)** : le bouton « Sous-titres en bulles » lance `tools/vosk_stream.py` (reconnaissance en flux continu : les mots apparaissent pendant que ça parle, ligne verte, puis bulles à la fin de la phrase). Langue parlée au choix (fr/en/es). Prérequis : `python3 -m venv --system-site-packages ~/.local/share/pocket-speaker/venv && ~/.local/share/pocket-speaker/venv/bin/pip install vosk`, modèles `vosk-model-small-{fr-0.22,en-us-0.15,es-0.42}` dans `~/.local/share/pocket-speaker/models/` (alphacephei.com/vosk/models). La traduction (Ollama) tourne dans un fil séparé.
 
 **Bulle flottante (Android)** : en quittant l'app, un service de premier plan + une bulle « par-dessus les autres applis » (état, coupure son/micro, toucher = rouvre). Plugin Java dans `android/build/src/main/java/fr/goodview/overlay` (build gradle ; `android/build/libs` = template, à réinstaller depuis `android_source.zip` sur un clone neuf).

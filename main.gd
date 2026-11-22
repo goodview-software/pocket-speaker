@@ -288,6 +288,7 @@ var delay_lbl: Label
 var ai_hist: Array = []
 const INTER := preload("res://kit/fonts/Inter-500.woff2")
 const PERSONA := "Tu es Goody, la mascotte de Pocket Speaker : un assistant généraliste, chaleureux et clair. Réponds court (2-4 phrases), dans la langue de l'utilisateur, sans markdown."
+var src_i := 0  # langue parlée (Vosk) : 0 fr · 1 en · 2 es
 var sub_target := 0  # langue de traduction (index dans LANGS, 0 = aucune)
 var subs_target_run := -1
 var opt_lang: OptionButton
@@ -442,6 +443,7 @@ func _load_pref() -> void:
 		last_name = str(cf.get_value("net", "last", ""))
 		want_subs = bool(cf.get_value("audio", "subs", false))
 		sub_target = int(cf.get_value("audio", "target", 0))
+		src_i = clampi(int(cf.get_value("audio", "src", 0)), 0, 2)
 		sub_delay = float(cf.get_value("audio", "delay", 0.0))
 		kid_mode = bool(cf.get_value("audio", "kid", false))
 	if pin == "":
@@ -464,6 +466,7 @@ func _save_pref() -> void:
 	cf.set_value("net", "last", last_name)
 	cf.set_value("audio", "subs", want_subs)
 	cf.set_value("audio", "target", sub_target)
+	cf.set_value("audio", "src", src_i)
 	cf.set_value("audio", "delay", sub_delay)
 	cf.set_value("audio", "kid", kid_mode)
 	cf.save("user://pref.cfg")
@@ -755,6 +758,21 @@ func _build_ui() -> void:
 			_pc_subs_sync()
 		_send_ctrl())
 	r4.add_child(opt_lang)
+	if not is_phone:
+		var r4b := HBoxContainer.new()
+		r4b.add_theme_constant_override("separation", 14)
+		c4.add_child(r4b)
+		var l4b := _label("Langue parlée", 16, C_TEXT, r4b)
+		l4b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var opt_src := OptionButton.new()
+		for l in ["Français", "English", "Español"]:
+			opt_src.add_item(l)
+		opt_src.select(src_i)
+		opt_src.item_selected.connect(func(i: int):
+			src_i = i
+			_save_pref()
+			_pc_subs_sync())
+		r4b.add_child(opt_src)
 
 	var c5 := _card(content)
 	delay_lbl = _label("", 16, C_TEXT, c5)
@@ -1674,8 +1692,8 @@ func _pc_teardown() -> void:
 # ------------------------------------------------------------------ Sous-titres (Whisper)
 
 func _subs_script() -> String:
-	for p in [OS.get_executable_path().get_base_dir() + "/whisper_stream.py",
-			ProjectSettings.globalize_path("res://tools/whisper_stream.py")]:
+	for p in [OS.get_executable_path().get_base_dir() + "/vosk_stream.py",
+			ProjectSettings.globalize_path("res://tools/vosk_stream.py")]:
 		if FileAccess.file_exists(p):
 			return p
 	return ""
@@ -1684,24 +1702,26 @@ func _subs_script() -> String:
 ## Démarre ou arrête Whisper selon « sous-titres » et l'état de la liaison.
 func _pc_subs_sync() -> void:
 	if want_subs and linked:
-		if subs_pid > 0 and subs_target_run != sub_target * 2 + int(kid_mode):
+		if subs_pid > 0 and subs_target_run != (sub_target * 2 + int(kid_mode)) * 4 + src_i:
 			_pc_subs_stop()
 		if subs_pid <= 0:
 			var sc := _subs_script()
 			if sc == "":
 				return
-			var model := OS.get_environment("POCKET_WHISPER") if OS.get_environment("POCKET_WHISPER") != "" else "small"
 			var cmd := "python3"
-			var args := PackedStringArray([sc, model, "auto", ("none" if kid_mode else LANGS[sub_target][0]), "kid" if kid_mode else "0"])
+			var venv := OS.get_environment("HOME") + "/.local/share/pocket-speaker/venv/bin/python3"
+			if FileAccess.file_exists(venv):
+				cmd = venv
+			var args := PackedStringArray([sc, "_", ["fr", "en", "es"][src_i], ("none" if kid_mode else LANGS[sub_target][0]), "kid" if kid_mode else "0"])
 			if OS.get_environment("FLATPAK_ID") != "":  # le Python du sandbox n'a pas Whisper : on lance sur l'hôte
 				cmd = "flatpak-spawn"
-				args = PackedStringArray(["--host", "--watch-bus", "python3"]) + args
+				args = PackedStringArray(["--host", "--watch-bus", venv if FileAccess.file_exists(venv) else "python3"]) + args
 			var io := OS.execute_with_pipe(cmd, args, false)
 			if io.has("pid"):
 				subs_pid = io["pid"]
 				subs_io = io["stdio"]
 				subs_ready = false
-				subs_target_run = sub_target * 2 + int(kid_mode)
+				subs_target_run = (sub_target * 2 + int(kid_mode)) * 4 + src_i
 				th_subs = Thread.new()
 				th_subs.start(_subs_loop)
 	else:
