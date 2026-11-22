@@ -172,6 +172,22 @@ class Icon extends Control:
 		Ico.draw_kind(self, kind, size / 2.0, minf(size.x, size.y) / 46.0, col)
 
 
+## Boîte pixel art à taille maîtrisée : cadre en escalier dessiné, contenu avec marges fixes.
+class PixBox extends MarginContainer:
+	var fill := Color(0.09, 0.11, 0.14)
+	var edge := Color(0.3, 0.88, 0.7, 0.8)
+
+	func _init(f := Color(0.09, 0.11, 0.14), e := Color(0.3, 0.88, 0.7, 0.8), pad := 12) -> void:
+		fill = f
+		edge = e
+		for k in ["left", "right", "top", "bottom"]:
+			add_theme_constant_override("margin_" + k, pad)
+		texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+
+	func _draw() -> void:
+		KPx.panel(self, Rect2(Vector2.ZERO, size), fill, edge, false, 2)
+
+
 class Seg extends Control:
 	signal picked(id: int)
 	var ids: Array = []
@@ -803,19 +819,27 @@ func _build_ui() -> void:
 	subs_sc = ScrollContainer.new()
 	subs_sc.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	subs_sc.size_flags_stretch_ratio = 2.0
+	subs_sc.custom_minimum_size = Vector2(0, 200)  # zone des blocs : taille minimale définie
 	subs_sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	chat_root.add_child(subs_sc)
 	subs_rows = VBoxContainer.new()
 	subs_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	subs_rows.add_theme_constant_override("separation", 6)
 	subs_sc.add_child(subs_rows)
+	var live_box := PixBox.new(Color(0.07, 0.15, 0.13), Color(C_OK, 0.95), 10)
+	live_box.custom_minimum_size = Vector2(0, 92 if is_phone else 84)  # taille fixe : ne se déforme jamais
+	live_box.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	live_box.clip_contents = true
 	live_lbl = Label.new()
 	live_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	live_lbl.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
+	live_lbl.clip_text = true
 	live_lbl.add_theme_font_override("font", INTER)
-	live_lbl.add_theme_font_size_override("font_size", 24 if is_phone else 21)
+	live_lbl.add_theme_font_size_override("font_size", 22 if is_phone else 19)
 	live_lbl.add_theme_color_override("font_color", C_OK)
-	live_lbl.custom_minimum_size = Vector2(0, 34)
-	chat_root.add_child(live_lbl)
+	live_lbl.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	live_box.add_child(live_lbl)
+	chat_root.add_child(live_box)
 	chat_sc = ScrollContainer.new()
 	chat_sc.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	chat_sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -1713,7 +1737,7 @@ func _pc_pump_subs() -> void:
 
 func _set_live(t: String) -> void:
 	if live_lbl != null:
-		live_lbl.text = t
+		live_lbl.text = t if t.length() <= 130 else "…" + t.substr(t.length() - 128)  # on garde la fin, la boîte reste fixe
 
 
 func _bubble(text: String) -> void:
@@ -1733,17 +1757,8 @@ func _bubble(text: String) -> void:
 func _add_block(id: int, orig: String) -> void:
 	if subs_rows == null:
 		return
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.09, 0.11, 0.14, 0.94)
-	sb.border_color = Color(C_OK, 0.45)
-	sb.border_width_left = 3
-	sb.set_corner_radius_all(10)
-	sb.content_margin_left = 14
-	sb.content_margin_right = 12
-	sb.content_margin_top = 8
-	sb.content_margin_bottom = 8
-	var pc := PanelContainer.new()
-	pc.add_theme_stylebox_override("panel", sb)
+	var pc := PixBox.new(Color(0.09, 0.11, 0.14), Color(C_OK, 0.55), 12)
+	pc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 4)
 	pc.add_child(v)
