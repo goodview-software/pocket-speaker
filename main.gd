@@ -18,7 +18,10 @@ const T_AUDIO := 1  # PC -> téléphone : PCM s16 stéréo 48 kHz
 const T_MIC := 2  # téléphone -> PC : PCM s16 mono
 const T_HELLO := 3  # téléphone -> PC : u32 fréquence micro + nom du téléphone
 const T_NAME := 4  # PC -> téléphone : [variante de mascotte u8] + nom du PC
-const T_CTRL := 5  # [son u8, micro u8, volume 0-100 u8] (dans les deux sens)
+const T_CTRL := 5  # [son u8, micro u8, volume 0-100 u8, sous-titres u8] (dans les deux sens)
+const T_PIN := 9  # PC -> téléphone : code PIN affiché sur le PC
+const T_DENY := 10  # téléphone -> PC : code refusé
+const T_TEXT := 11  # PC -> téléphone : phrase comprise par Whisper (UTF-8)
 const T_PING := 7
 const T_PONG := 8
 const SINK := "pocket_out"
@@ -244,11 +247,31 @@ var state := ST_IDLE
 var want_sound := true
 var want_mic := false
 var vol := 1.0
+var want_subs := false  # sous-titres Whisper en bulles sur le téléphone
+var tog_subs: Toggle
+var subs_pid := -1
+var subs_io: FileAccess
+var th_subs: Thread
+var subs_ready := false
+var subs_out: Array = []
+var bubbles: VBoxContainer
 var lvl_out := 0.0
 var lvl_mic := 0.0
 var rtt_ms := -1
 var link_mode := 0  # 0 auto · 1 Wi-Fi · 2 USB
 var peer_name := ""
+var pin := ""  # PC : code affiché, ne change que sur demande
+var phone_pin := ""  # téléphone : code saisi (vide = accepte tout PC)
+var authed := false
+var phones := {}  # PC : téléphones qui écoutent {clé: {name, ip, t}}
+var chosen := ""  # PC : clé du téléphone choisi ("usb" ou ip)
+var last_name := ""
+var user_disc := false
+var deny_t := -100000
+var phones_box: VBoxContainer
+var phones_sig := ""
+var pin_lbl: Label
+var disc_btn: Button
 var mic_rate := 48000
 var linked_t := 0.0
 var mascot := 0  # variante de Goody choisie dans le Goodview Launcher (profil partagé)
@@ -377,12 +400,29 @@ func _load_pref() -> void:
 	if cf.load("user://pref.cfg") == OK:
 		link_mode = int(cf.get_value("net", "mode", 0))
 		vol = float(cf.get_value("audio", "vol", 1.0))
+		pin = str(cf.get_value("net", "pin", ""))
+		phone_pin = str(cf.get_value("net", "phone_pin", ""))
+		last_name = str(cf.get_value("net", "last", ""))
+		want_subs = bool(cf.get_value("audio", "subs", false))
+	if pin == "":
+		_new_pin()
+
+
+func _new_pin() -> void:
+	pin = "%04d" % (randi() % 10000)
+	if pin_lbl != null:
+		pin_lbl.text = pin
+	_save_pref()
 
 
 func _save_pref() -> void:
 	var cf := ConfigFile.new()
 	cf.set_value("net", "mode", link_mode)
 	cf.set_value("audio", "vol", vol)
+	cf.set_value("net", "pin", pin)
+	cf.set_value("net", "phone_pin", phone_pin)
+	cf.set_value("net", "last", last_name)
+	cf.set_value("audio", "subs", want_subs)
 	cf.save("user://pref.cfg")
 
 
@@ -586,7 +626,87 @@ func _build_ui() -> void:
 	tog_mic.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	r2.add_child(tog_mic)
 
+	var c3 := _card(content)
+	var r3 := HBoxContainer.new()
+	r3.add_theme_constant_override("separation", 14)
+	c3.add_child(r3)
+	var l3 := _label("Sous-titres en bulles (Whisper)", 16, C_TEXT, r3)
+	l3.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	l3.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	tog_subs = Toggle.new()
+	tog_subs.set_on(want_subs)
+	tog_subs.toggled.connect(_on_subs)
+	tog_subs.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	r3.add_child(tog_subs)
+
+	if is_phone:
+		bubbles = VBoxContainer.new()
+		bubbles.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		bubbles.alignment = BoxContainer.ALIGNMENT_END
+		bubbles.add_theme_constant_override("separation", 8)
+		bubbles.set_anchors_preset(Control.PRESET_FULL_RECT)
+		bubbles.offset_left = 14
+		bubbles.offset_right = -14
+		bubbles.offset_bottom = -40
+		add_child(bubbles)
+
+	if is_phone:
+		var cp := _card(content)
+		var lp := Label.new()
+		lp.text = "Code du PC (affiché sur le PC)"
+		lp.add_theme_color_override("font_color", C_DIM)
+		cp.add_child(lp)
+		var le := LineEdit.new()
+		le.placeholder_text = "vide = tout PC accepté"
+		le.max_length = 8
+		le.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_NUMBER
+		le.text = phone_pin
+		le.add_theme_font_size_override("font_size", 26)
+		le.text_changed.connect(func(t: String):
+			phone_pin = t.strip_edges()
+			_save_pref())
+		cp.add_child(le)
 	if not is_phone:
+		var cpin := _card(content)
+		var hp := HBoxContainer.new()
+		hp.add_theme_constant_override("separation", 12)
+		cpin.add_child(hp)
+		var lk := Label.new()
+		lk.text = "Code PIN"
+		lk.add_theme_color_override("font_color", C_DIM)
+		lk.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		hp.add_child(lk)
+		pin_lbl = Label.new()
+		pin_lbl.text = pin
+		pin_lbl.add_theme_font_size_override("font_size", 34)
+		hp.add_child(pin_lbl)
+		var nb := Button.new()
+		nb.text = "Nouveau"
+		nb.pressed.connect(_new_pin)
+		hp.add_child(nb)
+		var hint := Label.new()
+		hint.text = "À saisir dans l'app du téléphone (Wi-Fi). Il ne change que si tu le demandes."
+		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		hint.add_theme_color_override("font_color", C_DIM)
+		cpin.add_child(hint)
+		var cph := _card(content)
+		var lt := Label.new()
+		lt.text = "Téléphones à l'écoute"
+		lt.add_theme_color_override("font_color", C_DIM)
+		cph.add_child(lt)
+		phones_box = VBoxContainer.new()
+		phones_box.add_theme_constant_override("separation", 8)
+		cph.add_child(phones_box)
+		disc_btn = Button.new()
+		disc_btn.text = "Déconnecter"
+		disc_btn.visible = false
+		disc_btn.pressed.connect(func():
+			chosen = ""
+			last_name = ""
+			user_disc = true
+			_save_pref()
+			_pc_unlink())
+		cph.add_child(disc_btn)
 		var seg := Seg.new()
 		seg.setup(["auto", "usb", "wifi"], [0, 2, 1], link_mode)
 		seg.picked.connect(func(id: int):
@@ -650,6 +770,14 @@ func _on_mic(on: bool) -> void:
 	_send_ctrl()
 
 
+func _on_subs(on: bool) -> void:
+	want_subs = on
+	_save_pref()
+	if not is_phone:
+		_pc_subs_sync()
+	_send_ctrl()
+
+
 func _on_vol(v: float) -> void:
 	vol = v / 100.0
 	if is_phone and player != null:
@@ -661,6 +789,7 @@ func _on_vol(v: float) -> void:
 func _apply_ctrl_ui() -> void:
 	tog_sound.set_on(want_sound)
 	tog_mic.set_on(want_mic)
+	tog_subs.set_on(want_subs)
 	vol_slider.set_value_no_signal(vol * 100.0)
 	if is_phone:
 		player.volume_db = linear_to_db(vol) if vol > 0.0 else -80.0
@@ -677,7 +806,7 @@ func _send(t: int, data: PackedByteArray) -> void:
 
 func _send_ctrl() -> void:
 	if linked:
-		_send(T_CTRL, PackedByteArray([1 if want_sound else 0, 1 if want_mic else 0, int(vol * 100.0)]))
+		_send(T_CTRL, PackedByteArray([1 if want_sound else 0, 1 if want_mic else 0, int(vol * 100.0), 1 if want_subs else 0]))
 
 
 ## Lit les trames reçues ; retourne false si la connexion est perdue.
@@ -712,6 +841,10 @@ func _on_frame(t: int, pl: PackedByteArray) -> void:
 				want_sound = pl[0] == 1
 				want_mic = pl[1] == 1
 				vol = pl[2] / 100.0
+				if pl.size() >= 4:
+					want_subs = pl[3] == 1
+					if not is_phone:
+						_pc_subs_sync()
 				_apply_ctrl_ui()
 				if not is_phone:
 					_pc_route()
@@ -720,6 +853,9 @@ func _on_frame(t: int, pl: PackedByteArray) -> void:
 		T_PONG:
 			if pl.size() >= 4:
 				rtt_ms = int(Time.get_ticks_msec() - pl.decode_u32(0)) & 0xFFFF
+		T_TEXT:
+			if is_phone and want_subs:
+				_bubble(pl.get_string_from_utf8())
 		T_AUDIO:
 			if is_phone:
 				_play(pl)
@@ -727,6 +863,21 @@ func _on_frame(t: int, pl: PackedByteArray) -> void:
 			if pl.size() >= 1:
 				mascot = clampi(pl[0], 0, 7)
 				peer_name = pl.slice(1).get_string_from_utf8()
+		T_PIN:
+			if is_phone:
+				if pl.get_string_from_utf8() == phone_pin or phone_pin == "":
+					authed = true
+				else:
+					_send(T_DENY, PackedByteArray())
+					peer.poll()
+					peer.disconnect_from_host()
+					peer = null
+					linked = false
+		T_DENY:
+			if not is_phone:
+				deny_t = Time.get_ticks_msec()
+				chosen = ""
+				_pc_unlink()
 		T_HELLO:
 			if not is_phone and pl.size() >= 4:
 				mic_rate = pl.decode_u32(0)
@@ -786,11 +937,15 @@ func _phone_process(delta: float) -> void:
 		peer = np
 		rxbuf.clear()
 		linked = false
+		authed = phone_pin == "" or np.get_connected_host() == "127.0.0.1"
 	if peer != null:
 		peer.poll()
 		var st := peer.get_status()
 		if st == StreamPeerTCP.STATUS_CONNECTED:
-			if not linked:
+			_read()
+			if peer == null:
+				return
+			if not linked and authed:
 				linked = true
 				var h := PackedByteArray()
 				h.resize(4)
@@ -798,8 +953,8 @@ func _phone_process(delta: float) -> void:
 				_send(T_HELLO, h + _phone_name().to_utf8_buffer())
 				_send_ctrl()
 				_set_status(ST_LINKED, "Connecté", "Le son de ton PC sort sur ce téléphone.")
-			_read()
-			_phone_pump_mic()
+			if linked:
+				_phone_pump_mic()
 		elif st != StreamPeerTCP.STATUS_CONNECTING:
 			peer = null
 			linked = false
@@ -809,7 +964,7 @@ func _phone_process(delta: float) -> void:
 		beacon_t -= delta
 		if beacon_t <= 0.0:
 			beacon_t = 1.0
-			beacon.put_packet("POCKET".to_utf8_buffer())
+			beacon.put_packet(("POCKET|" + _phone_name()).to_utf8_buffer())
 
 
 func _play(pl: PackedByteArray) -> void:
@@ -950,7 +1105,68 @@ func _adb_prepare() -> void:
 	_adb(["shell", "monkey", "-p", PKG, "-c", "android.intent.category.LAUNCHER", "1"])
 
 
+func _pc_scan() -> void:
+	var now := Time.get_ticks_msec()
+	while lan.get_available_packet_count() > 0:
+		var txt := lan.get_packet().get_string_from_utf8()
+		var ip := lan.get_packet_ip()
+		if txt.begins_with("POCKET"):
+			var nm := txt.substr(7) if txt.length() > 7 else "Téléphone"
+			phones[ip] = {"name": nm, "ip": ip, "t": now}
+	for k in phones.keys():
+		if now - int(phones[k]["t"]) > 4000:
+			phones.erase(k)
+	mtx.lock()
+	var ast := adb_state
+	mtx.unlock()
+	var list: Array = []
+	if link_mode != 2 and ast == "ready":
+		list.append({"key": "usb", "name": "Téléphone branché (USB)"})
+	if link_mode != 1:
+		for k in phones:
+			list.append({"key": k, "name": phones[k]["name"] + " · Wi-Fi"})
+	var sig := chosen + "|" + str(linked)
+	for d in list:
+		sig += "|" + d["key"] + d["name"]
+	if test_mode and chosen == "" and not list.is_empty():
+		chosen = list[0]["key"]
+	if chosen == "" and not user_disc and last_name != "":
+		for d in list:
+			if d["name"].begins_with(last_name):
+				chosen = d["key"]
+				break
+	if sig != phones_sig and phones_box != null:
+		phones_sig = sig
+		for c in phones_box.get_children():
+			c.queue_free()
+		if list.is_empty():
+			var e := Label.new()
+			e.text = "Aucun pour l'instant. Ouvre Pocket Speaker sur le téléphone (même Wi-Fi) ou branche-le."
+			e.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			e.add_theme_color_override("font_color", C_DIM)
+			phones_box.add_child(e)
+		for d in list:
+			var b := Button.new()
+			b.text = ("● " if d["key"] == chosen else "") + d["name"]
+			b.custom_minimum_size = Vector2(0, 46)
+			var key: String = d["key"]
+			var nm2: String = d["name"]
+			b.pressed.connect(func():
+				if key == chosen:
+					return
+				if linked or peer != null:
+					_pc_unlink()
+				chosen = key
+				user_disc = false
+				last_name = nm2.split(" · ")[0]
+				_save_pref())
+			phones_box.add_child(b)
+	if disc_btn != null:
+		disc_btn.visible = chosen != ""
+
+
 func _pc_process(delta: float) -> void:
+	_pc_scan()
 	if peer != null:
 		if not _read():
 			_pc_unlink()
@@ -958,10 +1174,12 @@ func _pc_process(delta: float) -> void:
 		if peer.get_status() == StreamPeerTCP.STATUS_CONNECTED:
 			if not name_sent:
 				name_sent = true
+				_send(T_PIN, pin.to_utf8_buffer())
 				_send(T_NAME, PackedByteArray([mascot]) + _pc_name().to_utf8_buffer())
 			if linked:
 				linked_t += delta
 				_pc_pump_capture()
+				_pc_pump_subs()
 				ping_t -= delta
 				if ping_t <= 0.0:
 					ping_t = 2.0
@@ -983,24 +1201,21 @@ func _pc_process(delta: float) -> void:
 	var st := adb_state
 	var msg := adb_msg
 	mtx.unlock()
-	while lan.get_available_packet_count() > 0:
-		if lan.get_packet().get_string_from_utf8() == "POCKET":
-			lan_ip = lan.get_packet_ip()
-			lan_t = Time.get_ticks_msec()
-	if lan_ip != "" and Time.get_ticks_msec() - lan_t > 4000:
-		lan_ip = ""
 	var host := ""
-	if link_mode != 1 and st == "ready":
+	if chosen == "usb" and link_mode != 1 and st == "ready":
 		host = "127.0.0.1"
 		_set_status(ST_WAIT, "Téléphone détecté", "Démarrage de l'app sur le téléphone…")
-	elif link_mode != 2 and lan_ip != "":
-		host = lan_ip
-		_set_status(ST_WAIT, "Téléphone trouvé sur le Wi-Fi", "Connexion à " + lan_ip + "…")
-	elif link_mode == 1:
-		_set_status(ST_IDLE, "Cherche le téléphone…", "Ouvre Pocket Speaker sur le téléphone (même Wi-Fi).")
+	elif chosen != "" and chosen != "usb" and phones.has(chosen) and link_mode != 2:
+		host = chosen
+		_set_status(ST_WAIT, "Connexion à " + str(phones[chosen]["name"]) + "…", "")
+	elif chosen == "":
+		if Time.get_ticks_msec() - deny_t < 6000:
+			_set_status(ST_IDLE, "Code refusé", "Entre le code PIN affiché ici dans l'app du téléphone.")
+		else:
+			_set_status(ST_IDLE, "Choisis ton téléphone", msg + "\nOu ouvre l'app sur le téléphone (même Wi-Fi).")
 		return
 	else:
-		_set_status(ST_IDLE, "Branche ton téléphone", msg + "\nOu ouvre l'app sur le téléphone (même Wi-Fi).")
+		_set_status(ST_IDLE, "Cherche le téléphone…", "Ouvre Pocket Speaker sur le téléphone (même Wi-Fi) ou branche-le.")
 		return
 	try_t -= delta
 	if try_t <= 0.0:
@@ -1039,6 +1254,7 @@ func _pc_link() -> void:
 			"sink_properties=device.description=Micro-Telephone"])
 	modules = PackedStringArray([m2, m1])
 	_pc_route()
+	_pc_subs_sync()
 	var io := OS.execute_with_pipe("parec", ["-d", SINK + ".monitor", "--format=s16le",
 			"--rate=%d" % RATE, "--channels=2", "--latency-msec=20"], false)
 	if io.has("pid"):
@@ -1100,6 +1316,8 @@ func _pc_pump_capture() -> void:
 		for i in range(0, b.size() - 1, 32):
 			p = maxi(p, absi(b.decode_s16(i)))
 		lvl_out = maxf(lvl_out, p / 32768.0)
+		if subs_io != null and subs_ready:
+			subs_io.store_buffer(b)
 		if want_sound:
 			_send(T_AUDIO, b)
 
@@ -1114,6 +1332,7 @@ func _pc_mic(pl: PackedByteArray) -> void:
 
 
 func _pc_teardown() -> void:
+	_pc_subs_stop()
 	if prev_src != "":
 		_pa(["set-default-source", prev_src])
 	if prev_sink != "":
@@ -1139,3 +1358,104 @@ func _pc_teardown() -> void:
 			_pa(["unload-module", m])
 	modules = PackedStringArray()
 	cap_queue.clear()
+
+
+# ------------------------------------------------------------------ Sous-titres (Whisper)
+
+func _subs_script() -> String:
+	for p in [OS.get_executable_path().get_base_dir() + "/whisper_stream.py",
+			ProjectSettings.globalize_path("res://tools/whisper_stream.py")]:
+		if FileAccess.file_exists(p):
+			return p
+	return ""
+
+
+## Démarre ou arrête Whisper selon « sous-titres » et l'état de la liaison.
+func _pc_subs_sync() -> void:
+	if want_subs and linked:
+		if subs_pid <= 0:
+			var sc := _subs_script()
+			if sc == "":
+				return
+			var io := OS.execute_with_pipe("python3", [sc, OS.get_environment("POCKET_WHISPER") if OS.get_environment("POCKET_WHISPER") != "" else "small", "auto"], false)
+			if io.has("pid"):
+				subs_pid = io["pid"]
+				subs_io = io["stdio"]
+				subs_ready = false
+				th_subs = Thread.new()
+				th_subs.start(_subs_loop)
+	else:
+		_pc_subs_stop()
+
+
+func _pc_subs_stop() -> void:
+	if subs_pid > 0:
+		OS.kill(subs_pid)
+		subs_pid = -1
+	if th_subs != null:
+		th_subs.wait_to_finish()
+		th_subs = null
+	subs_io = null
+	subs_ready = false
+	mtx.lock()
+	subs_out.clear()
+	mtx.unlock()
+
+
+func _subs_loop() -> void:
+	while not quit and subs_pid > 0 and subs_io != null:
+		var line := subs_io.get_line()
+		if line == "":
+			if subs_pid <= 0 or not OS.is_process_running(subs_pid):
+				return
+			OS.delay_msec(20)
+			continue
+		if line.begins_with("\u0001ready"):
+			subs_ready = true
+			continue
+		mtx.lock()
+		subs_out.append(line)
+		mtx.unlock()
+
+
+## Envoie au téléphone les phrases que Whisper vient de comprendre.
+func _pc_pump_subs() -> void:
+	if subs_out.is_empty():
+		return
+	mtx.lock()
+	var q := subs_out
+	subs_out = []
+	mtx.unlock()
+	for t: String in q:
+		_send(T_TEXT, t.to_utf8_buffer().slice(0, 1000))
+
+
+func _bubble(text: String) -> void:
+	if bubbles == null or text.strip_edges() == "":
+		return
+	var pc := PanelContainer.new()
+	pc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.09, 0.11, 0.14, 0.92)
+	sb.border_color = Color(C_OK, 0.6)
+	sb.set_border_width_all(2)
+	sb.set_corner_radius_all(16)
+	sb.content_margin_left = 16
+	sb.content_margin_right = 16
+	sb.content_margin_top = 10
+	sb.content_margin_bottom = 10
+	pc.add_theme_stylebox_override("panel", sb)
+	var l := Label.new()
+	l.text = text
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	l.add_theme_font_size_override("font_size", 20)
+	l.add_theme_color_override("font_color", C_TEXT)
+	pc.add_child(l)
+	bubbles.add_child(pc)
+	while bubbles.get_child_count() > 4:
+		bubbles.get_child(0).queue_free()
+		bubbles.remove_child(bubbles.get_child(0))
+	var tw := pc.create_tween()
+	tw.tween_interval(3.0 + text.length() * 0.06)
+	tw.tween_property(pc, "modulate:a", 0.0, 0.6)
+	tw.tween_callback(pc.queue_free)

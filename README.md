@@ -11,3 +11,5 @@ Mascotte : la variante choisie dans le Goodview Launcher (profil partagé `~/.co
 - Test de liaison sans téléphone : `POCKET_PHONE=1` (instance « téléphone ») + `POCKET_TEST=1 POCKET_NOROUTE=1` (instance PC).
 
 Note : sur le Wi-Fi, le téléphone accepte toute connexion entrante (pas d'appairage pour l'instant).
+
+**Sous-titres (Whisper)** : le bouton « Sous-titres en bulles » (PC ou téléphone) lance `tools/whisper_stream.py` (openai-whisper, GPU si dispo, modèle `small`, `POCKET_WHISPER=medium` pour changer) sur le son du PC et affiche en bulles, sur l'écran du téléphone, ce qui est compris (langue détectée automatiquement). Le son doit passer par Pocket Speaker (« Son » activé). Prérequis : `python3` avec `openai-whisper`.
