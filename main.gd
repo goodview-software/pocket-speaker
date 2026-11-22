@@ -255,6 +255,9 @@ var th_subs: Thread
 var subs_ready := false
 var subs_out: Array = []
 var bubbles: VBoxContainer
+var settings_layer: Control
+var settings_box: VBoxContainer
+var press_t := -1.0
 var subs_card: Control
 var subs_lbl: Label
 var subs_lines: Array = []
@@ -583,6 +586,52 @@ func _build_ui() -> void:
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	sub.custom_minimum_size = Vector2(0, 40)
+	var hint_l := _label("Reste appuyé sur le personnage pour les paramètres", 13, C_IDLE, content)
+	hint_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint_l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+
+	# Paramètres : fenêtre ouverte par un appui long sur le personnage.
+	var main_content := content
+	settings_layer = Control.new()
+	settings_layer.set_anchors_preset(Control.PRESET_FULL_RECT)
+	settings_layer.visible = false
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.6)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	dim.gui_input.connect(func(e: InputEvent):
+		if e is InputEventMouseButton and e.pressed:
+			settings_layer.visible = false)
+	settings_layer.add_child(dim)
+	var sc := ScrollContainer.new()
+	sc.set_anchors_preset(Control.PRESET_FULL_RECT)
+	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	sc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	settings_layer.add_child(sc)
+	var sm := MarginContainer.new()
+	sm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sm.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	for side in ["top", "bottom", "left", "right"]:
+		sm.add_theme_constant_override("margin_" + side, 22 if side != "top" else top)
+	sc.add_child(sm)
+	var scen := CenterContainer.new()
+	scen.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	sm.add_child(scen)
+	content = VBoxContainer.new()
+	content.add_theme_constant_override("separation", 16)
+	scen.add_child(content)
+	settings_box = content
+	var th := HBoxContainer.new()
+	content.add_child(th)
+	var tl := _label("Paramètres", 24, C_TEXT, th)
+	tl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var xb := Button.new()
+	xb.text = "Fermer"
+	xb.custom_minimum_size = Vector2(0, 44)
+	xb.pressed.connect(func(): settings_layer.visible = false)
+	th.add_child(xb)
+	orb.gui_input.connect(func(e: InputEvent):
+		if e is InputEventMouseButton and e.button_index == MOUSE_BUTTON_LEFT:
+			press_t = 0.0 if e.pressed else -1.0)
 
 	var c1 := _card(content)
 	var r1 := HBoxContainer.new()
@@ -691,11 +740,17 @@ func _build_ui() -> void:
 			link_mode = id
 			_save_pref())
 		content.add_child(seg)
+	content = main_content
+	add_child(settings_layer)
+	_fit_width()
 
 
 func _fit_width() -> void:
+	var w := clampf(get_viewport_rect().size.x - 36.0, 280.0, 520.0)
 	if content != null:
-		content.custom_minimum_size.x = clampf(get_viewport_rect().size.x - 36.0, 280.0, 520.0)
+		content.custom_minimum_size.x = w
+	if settings_box != null:
+		settings_box.custom_minimum_size.x = w
 
 
 func _set_status(st: int, a: String, b: String) -> void:
@@ -705,6 +760,11 @@ func _set_status(st: int, a: String, b: String) -> void:
 
 
 func _ui_tick(delta: float) -> void:
+	if press_t >= 0.0:
+		press_t += delta
+		if press_t > 0.6:
+			press_t = -1.0
+			settings_layer.visible = true
 	lvl_out = maxf(0.0, lvl_out - delta * 1.2)
 	lvl_mic = maxf(0.0, lvl_mic - delta * 1.2)
 	ico_sound.col = C_TEXT if want_sound else C_DIM
