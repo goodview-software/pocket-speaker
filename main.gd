@@ -271,6 +271,7 @@ var pop_word: Label
 var pop_text: Label
 var subs_sc: ScrollContainer
 var subs_rows: VBoxContainer
+var blocks := {}  # id de bloc -> VBox
 var live_lbl: Label  # mots en direct (hypothèse en cours), avant la fin de la phrase
 var sub_delay := 0.0  # secondes de décalage du son (pour avoir le temps de lire)
 var delay_q: Array = []
@@ -279,8 +280,6 @@ var subs_t0 := 0  # heure (ms) du premier octet envoyé à Whisper
 var subs_bytes := 0
 var sub_last := 0
 var sub_lag := 0.0  # retard moyen du texte par rapport à la parole (s)
-var delay_slider: HSlider
-var delay_lbl: Label
 var ai_hist: Array = []
 const INTER := preload("res://kit/fonts/Inter-500.woff2")
 const PERSONA := "Tu es Goody, la mascotte de Pocket Speaker : un assistant généraliste, chaleureux et clair. Réponds court (2-4 phrases), dans la langue de l'utilisateur, sans markdown."
@@ -440,7 +439,6 @@ func _load_pref() -> void:
 		want_subs = bool(cf.get_value("audio", "subs", false))
 		sub_target = int(cf.get_value("audio", "target", 0))
 		src_i = clampi(int(cf.get_value("audio", "src", 0)), 0, 2)
-		sub_delay = float(cf.get_value("audio", "delay", 0.0))
 	if pin == "":
 		_new_pin()
 
@@ -768,25 +766,6 @@ func _build_ui() -> void:
 			_pc_subs_sync())
 		r4b.add_child(opt_src)
 
-	var c5 := _card(content)
-	delay_lbl = _label("", 16, C_TEXT, c5)
-	delay_slider = HSlider.new()
-	delay_slider.min_value = 0.0
-	delay_slider.max_value = 8.0
-	delay_slider.step = 0.5
-	delay_slider.value = sub_delay
-	delay_slider.custom_minimum_size = Vector2(0, 30)
-	delay_slider.value_changed.connect(func(v: float):
-		sub_delay = v
-		_delay_text()
-		_save_pref()
-		_send_ctrl())
-	c5.add_child(delay_slider)
-	var d5 := _label("Retarde le son envoyé au téléphone pour laisser le texte arriver avant. Décale aussi le son par rapport à l'image du PC.", 13, C_DIM, c5)
-	d5.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_delay_text()
-
-
 	if not is_phone:
 		var cph := _card(content)
 		var lt := Label.new()
@@ -821,14 +800,6 @@ func _build_ui() -> void:
 	chat_root.offset_bottom = -14
 	chat_root.add_theme_constant_override("separation", 8)
 	add_child(chat_root)
-	live_lbl = Label.new()
-	live_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	live_lbl.add_theme_font_override("font", INTER)
-	live_lbl.add_theme_font_size_override("font_size", 24 if is_phone else 21)
-	live_lbl.add_theme_color_override("font_color", C_OK)
-	live_lbl.custom_minimum_size = Vector2(0, 34)
-	live_lbl.visible = false
-	chat_root.add_child(live_lbl)
 	subs_sc = ScrollContainer.new()
 	subs_sc.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	subs_sc.size_flags_stretch_ratio = 2.0
@@ -838,6 +809,13 @@ func _build_ui() -> void:
 	subs_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	subs_rows.add_theme_constant_override("separation", 6)
 	subs_sc.add_child(subs_rows)
+	live_lbl = Label.new()
+	live_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	live_lbl.add_theme_font_override("font", INTER)
+	live_lbl.add_theme_font_size_override("font_size", 24 if is_phone else 21)
+	live_lbl.add_theme_color_override("font_color", C_OK)
+	live_lbl.custom_minimum_size = Vector2(0, 34)
+	chat_root.add_child(live_lbl)
 	chat_sc = ScrollContainer.new()
 	chat_sc.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	chat_sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -1000,12 +978,6 @@ func _media(code: int) -> void:
 		OS.create_process("sh", [sc, arg])
 
 
-func _delay_text() -> void:
-	delay_lbl.text = "Décalage du son : " + ("aucun" if sub_delay < 0.05 else "%.1f s" % sub_delay)
-	if sub_lag > 0.0 and want_subs:
-		delay_lbl.text += "  (texte prêt ~%.1f s après la parole : règle au moins ça)" % sub_lag
-
-
 func _on_subs(on: bool) -> void:
 	want_subs = on
 	if subs_card != null:
@@ -1086,10 +1058,6 @@ func _on_frame(t: int, pl: PackedByteArray) -> void:
 					if pl.size() >= 5:
 						sub_target = clampi(pl[4], 0, LANGS.size() - 1)
 						opt_lang.select(sub_target)
-					if pl.size() >= 6:
-						sub_delay = pl[5] / 2.0
-						delay_slider.set_value_no_signal(sub_delay)
-						_delay_text()
 					if not is_phone:
 						_pc_subs_sync()
 				_apply_ctrl_ui()
@@ -1732,99 +1700,80 @@ func _subs_loop() -> void:
 
 ## Planifie chaque groupe de mots à l'heure où il est prononcé (son décalé), sans les lâcher d'un seul coup.
 func _pc_pump_subs() -> void:
-	var now := Time.get_ticks_msec()
-	if not subs_out.is_empty():
-		mtx.lock()
-		var q := subs_out
-		subs_out = []
-		mtx.unlock()
-		for line: String in q:
-			if line.begins_with("\u0006"):
-				_send(T_TEXT, line.to_utf8_buffer().slice(0, 1000))
-				_set_live(line.substr(1))
-				continue
-			var k := line.find("\u0003")
-			var due := now
-			if k > 0:
-				var tm := line.substr(0, k).split(",")
-				var st := tm[0].to_float()
-				var dur := maxf(0.8, tm[1].to_float() - st) if tm.size() > 1 else 2.0
-				var spoken := subs_t0 + int(st * 1000.0)
-				sub_lag = lerpf(sub_lag, (now - spoken) / 1000.0, 0.3) if sub_lag > 0.0 else (now - spoken) / 1000.0
-				due = spoken + int(sub_delay * 1000.0) - 250
-				line = "%d\u0005%s" % [int(dur * 1000.0), line.substr(k + 1)]
-			sub_sched.append([due, line])
-		_delay_text()
-	while not sub_sched.is_empty() and int(sub_sched[0][0]) <= now and now - sub_last >= 250:
-		sub_last = now
-		var t: String = sub_sched.pop_front()[1]
-		_send(T_TEXT, t.to_utf8_buffer().slice(0, 1000))
-		_bubble(t)
+	if subs_out.is_empty():
+		return
+	mtx.lock()
+	var q := subs_out
+	subs_out = []
+	mtx.unlock()
+	for line: String in q:
+		_send(T_TEXT, line.to_utf8_buffer().slice(0, 1000))
+		_bubble(line)
 
 
 func _set_live(t: String) -> void:
 	if live_lbl != null:
 		live_lbl.text = t
-		live_lbl.visible = t != ""
 
 
 func _bubble(text: String) -> void:
 	if text.begins_with("\u0006"):
 		_set_live(text.substr(1))
-		return
-	if text.strip_edges() == "":
-		return
-	var dur := 2000
-	var body := text
-	var k := text.find("\u0005")
-	if k > 0:
-		dur = text.substr(0, k).to_int()
-		body = text.substr(k + 1)
-	var parts := body.split("\u0002")
-	_add_sub(parts[0], parts[1] if parts.size() > 1 else "")
+	elif text.begins_with("\u0007") or text.begins_with("\u0008"):
+		var k := text.find("\u001f")
+		if k > 1:
+			var id := text.substr(1, k - 1).to_int()
+			if text.begins_with("\u0007"):
+				_add_block(id, text.substr(k + 1))
+			else:
+				_set_trans(id, text.substr(k + 1))
 
 
-## Groupe de mots : original à gauche, traduction à droite ; les nouveaux arrivent en haut et font descendre les anciens.
-func _add_sub(orig: String, trans: String) -> void:
+## Un bloc par phrase terminée (chronologique, le plus récent en bas) ; la traduction s'ajoute dessous quand elle arrive.
+func _add_block(id: int, orig: String) -> void:
 	if subs_rows == null:
 		return
-	var clip := Control.new()
-	clip.clip_contents = true
-	clip.mouse_filter = Control.MOUSE_FILTER_PASS
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 10)
-	row.set_anchors_preset(Control.PRESET_TOP_WIDE)
-	clip.add_child(row)
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.09, 0.11, 0.14, 0.94)
+	sb.border_color = Color(C_OK, 0.45)
+	sb.border_width_left = 3
+	sb.set_corner_radius_all(10)
+	sb.content_margin_left = 14
+	sb.content_margin_right = 12
+	sb.content_margin_top = 8
+	sb.content_margin_bottom = 8
+	var pc := PanelContainer.new()
+	pc.add_theme_stylebox_override("panel", sb)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 4)
+	pc.add_child(v)
+	var tm := Label.new()
+	tm.text = Time.get_time_string_from_system()
+	tm.add_theme_font_size_override("font_size", 12)
+	tm.add_theme_color_override("font_color", C_DIM)
+	v.add_child(tm)
 	var fs := 21 if is_phone else 19
 	var lw := []
-	var left := _sub_label(_linkify(orig, "#e8ecf1", lw), orig, fs, lw)
-	row.add_child(left)
-	if trans != "":
-		var ar := Label.new()
-		ar.text = "⟶"
-		ar.add_theme_color_override("font_color", C_WAIT)
-		ar.add_theme_font_size_override("font_size", fs)
-		ar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		row.add_child(ar)
-		var rw := []
-		row.add_child(_sub_label(_linkify(trans, "#4de1b4", rw), trans, fs, rw))
-	subs_rows.add_child(clip)
-	subs_rows.move_child(clip, 0)
-	clip.custom_minimum_size.y = 0.0
-	await get_tree().process_frame
-	if not is_instance_valid(clip):
-		return
-	var h := row.get_combined_minimum_size().y + 6.0
-	var tw := clip.create_tween()
-	tw.tween_property(clip, "custom_minimum_size:y", h, 0.35).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-	var n := subs_rows.get_child_count()
-	for i in n:
-		subs_rows.get_child(i).modulate.a = 1.0 if i == 0 else maxf(0.3, 0.8 - 0.12 * i)
-	while subs_rows.get_child_count() > 80:
-		var old := subs_rows.get_child(subs_rows.get_child_count() - 1)
+	v.add_child(_sub_label(_linkify(orig, "#e8ecf1", lw), orig, fs, lw))
+	var at_end := subs_sc.scroll_vertical >= subs_sc.get_v_scroll_bar().max_value - subs_sc.size.y - 40
+	subs_rows.add_child(pc)
+	blocks[id] = v
+	while subs_rows.get_child_count() > 200:
+		var old := subs_rows.get_child(0)
 		subs_rows.remove_child(old)
 		old.queue_free()
-	subs_sc.scroll_vertical = 0
+	if at_end:
+		await get_tree().process_frame
+		await get_tree().process_frame
+		subs_sc.scroll_vertical = int(subs_sc.get_v_scroll_bar().max_value)
+
+
+func _set_trans(id: int, t: String) -> void:
+	if not blocks.has(id) or not is_instance_valid(blocks[id]):
+		return
+	var rw := []
+	var l := _sub_label(_linkify(t, "#4de1b4", rw), t, 19 if is_phone else 17, rw)
+	blocks[id].add_child(l)
 
 
 func _sub_label(bb: String, plain: String, fs: int, words: Array) -> RichTextLabel:

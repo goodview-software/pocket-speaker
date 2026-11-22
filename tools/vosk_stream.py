@@ -25,37 +25,6 @@ def translate(t):
     except Exception:
         return None
 
-def chunks(t, n=5):
-    """Découpe une phrase en groupes de 2 à n mots (sur la ponctuation, puis par taille)."""
-    parts = [p.strip() for p in re.findall(r"[^,;:.!?…]+[,;:.!?…]*", t) if p.strip()]
-    out = []
-    for p in parts:
-        w = p.split()
-        k = -(-len(w) // n)
-        per = -(-len(w) // k)
-        out += [" ".join(w[i:i + per]) for i in range(0, len(w), per)]
-    merged = []
-    for c in out:  # un groupe d'un seul mot rejoint le précédent
-        if merged and len(c.split()) == 1 and len(merged[-1].split()) < n + 1:
-            merged[-1] += " " + c
-        else:
-            merged.append(c)
-    return merged or [t]
-
-def translate_chunks(full, chs):
-    if len(chs) == 1:
-        return [translate(chs[0])]
-    body = {"model": TMODEL, "stream": False, "keep_alive": "30m", "options": {"num_predict": 300, "temperature": 0},
-            "prompt": "Traduis en %s ce texte découpé en segments séparés par ' || '. Garde exactement le même découpage (même nombre de segments, séparés par ' || '). Réponds uniquement par la traduction.\n\n%s" % (NAMES.get(target, target), " || ".join(chs))}
-    try:
-        rq = urllib.request.Request(OLLAMA + "/api/generate", json.dumps(body).encode(), {"Content-Type": "application/json"})
-        parts = [x.strip() for x in json.load(urllib.request.urlopen(rq, timeout=30))["response"].split("||")]
-        if len(parts) == len(chs) and all(parts):
-            return parts
-    except Exception:
-        pass
-    return [translate(c) for c in chs]
-
 BAD = re.compile(r"(sous-?titr|amara|merci d'avoir regard|thanks for watching|subscribe|abonne)", re.I)
 
 MODELS = {"fr": "vosk-model-small-fr-0.22", "en": "vosk-model-small-en-us-0.15", "es": "vosk-model-small-es-0.42"}
@@ -66,32 +35,14 @@ rec.SetWords(True)
 print("\x01ready", flush=True)
 
 workq = queue.Queue()
-def emit(words, text):
-    t = text.strip()
-    if not t or BAD.search(t):
-        return
-    chs = chunks(t, 5)
-    trs = translate_chunks(t, chs) if target else [None] * len(chs)
-    idx = 0
-    n_all = max(1, sum(len(c.split()) for c in chs))
-    seg_s = words[0]["start"] if words else 0.0
-    seg_e = words[-1]["end"] if words else 2.0
-    for c, tr in zip(chs, trs):
-        k = len(c.split())
-        if words:
-            st = words[min(idx, len(words) - 1)]["start"]
-            en = words[min(idx + k, len(words)) - 1]["end"]
-        else:
-            st = seg_s + (seg_e - seg_s) * idx / n_all
-            en = seg_s + (seg_e - seg_s) * (idx + k) / n_all
-        idx += k
-        print("%.2f,%.2f\x03%s" % (st, en, c) + ("\x02" + tr.replace("\n", " ") if tr else ""), flush=True)
-
-def worker():  # traduction / simplification hors de la boucle audio
+nblock = 0
+def worker():  # traduction hors de la boucle audio : les mots en direct ne sont jamais bloqués
     while True:
-        words, text = workq.get()
+        n, text = workq.get()
         try:
-            emit(words, text)
+            tr = translate(text)
+            if tr:
+                print("\x08%d\x1f%s" % (n, tr.replace("\n", " ")), flush=True)
         except Exception:
             pass
 threading.Thread(target=worker, daemon=True).start()
@@ -110,8 +61,12 @@ while True:
         r = _j.loads(rec.Result())
         print("\x06", flush=True)
         last = ""
-        if r.get("text"):
-            workq.put((r.get("result") or [], r["text"]))
+        t = r.get("text", "").strip()
+        if t and not BAD.search(t):
+            nblock += 1
+            print("\x07%d\x1f%s" % (nblock, t), flush=True)  # bloc de phrase, tout de suite
+            if target:
+                workq.put((nblock, t))
     else:
         p = _j.loads(rec.PartialResult()).get("partial", "")
         if p != last:
