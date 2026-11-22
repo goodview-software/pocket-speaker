@@ -176,6 +176,7 @@ class Icon extends Control:
 class PixBox extends MarginContainer:
 	var fill := Color(0.09, 0.11, 0.14)
 	var edge := Color(0.3, 0.88, 0.7, 0.8)
+	var tail_left := false  # bulle de dialogue : petite pointe en escalier vers la gauche (la mascotte)
 
 	func _init(f := Color(0.09, 0.11, 0.14), e := Color(0.3, 0.88, 0.7, 0.8), pad := 12) -> void:
 		fill = f
@@ -186,6 +187,12 @@ class PixBox extends MarginContainer:
 
 	func _draw() -> void:
 		KPx.panel(self, Rect2(Vector2.ZERO, size), fill, edge, false, 2)
+		if tail_left:
+			var cy := roundf(size.y * 0.5)
+			for i in 4:
+				var w := float((4 - i) * 4)
+				draw_rect(Rect2(-w + 2, cy - 8 + i * 4, w, 16 - i * 8), edge)
+				draw_rect(Rect2(-w + 4, cy - 6 + i * 4, w, 12 - i * 8), fill)
 
 
 class Seg extends Control:
@@ -288,6 +295,8 @@ var pop_text: Label
 var subs_sc: ScrollContainer
 var subs_rows: VBoxContainer
 var blocks := {}  # id de bloc -> VBox
+var live_box: Control
+var transcript: Array = []  # phrases entendues (contexte pour l'assistant)
 var live_lbl: Label  # mots en direct (hypothèse en cours), avant la fin de la phrase
 var sub_delay := 0.0  # secondes de décalage du son (pour avoir le temps de lire)
 var delay_q: Array = []
@@ -617,9 +626,31 @@ func _build_ui() -> void:
 	head.add_child(chip_p)
 	chip = _label("", 14, C_DIM, chip_p)
 
+	var orb_row := HBoxContainer.new()
+	orb_row.add_theme_constant_override("separation", 22)
+	content.add_child(orb_row)
 	orb = Orb.new()
 	orb.custom_minimum_size = Vector2(0, 230)
-	content.add_child(orb)
+	orb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	orb_row.add_child(orb)
+	live_box = PixBox.new(Color(0.03, 0.04, 0.06), Color(C_OK, 1.0), 12)
+	live_box.custom_minimum_size = Vector2(0, 150)  # taille fixe : ne se déforme jamais
+	live_box.tail_left = true
+	live_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	live_box.size_flags_stretch_ratio = 1.5
+	live_box.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	live_box.visible = want_subs
+	live_lbl = Label.new()
+	live_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	live_lbl.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
+	live_lbl.clip_text = true
+	live_lbl.add_theme_font_override("font", INTER)
+	live_lbl.add_theme_font_size_override("font_size", 26 if is_phone else 23)
+	live_lbl.add_theme_color_override("font_color", Color.WHITE)
+	live_lbl.add_theme_constant_override("line_spacing", 6)
+	live_lbl.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	live_box.add_child(live_lbl)
+	orb_row.add_child(live_box)
 	status = _label("", 22, C_TEXT, content)
 	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sub = _label("", 14, C_DIM, content)
@@ -821,26 +852,20 @@ func _build_ui() -> void:
 	subs_sc.size_flags_stretch_ratio = 2.0
 	subs_sc.custom_minimum_size = Vector2(0, 200)  # zone des blocs : taille minimale définie
 	subs_sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	var clr_row := HBoxContainer.new()
+	var clr_sp := Control.new()
+	clr_sp.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	clr_row.add_child(clr_sp)
+	var clr_btn := Button.new()
+	clr_btn.text = "Effacer les paroles"
+	clr_btn.pressed.connect(_clear_subs)
+	clr_row.add_child(clr_btn)
+	chat_root.add_child(clr_row)
 	chat_root.add_child(subs_sc)
 	subs_rows = VBoxContainer.new()
 	subs_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	subs_rows.add_theme_constant_override("separation", 6)
 	subs_sc.add_child(subs_rows)
-	var live_box := PixBox.new(Color(0.03, 0.04, 0.06), Color(C_OK, 1.0), 12)
-	live_box.custom_minimum_size = Vector2(0, 112 if is_phone else 100)  # taille fixe : ne se déforme jamais
-	live_box.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
-	live_box.clip_contents = true
-	live_lbl = Label.new()
-	live_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	live_lbl.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
-	live_lbl.clip_text = true
-	live_lbl.add_theme_font_override("font", INTER)
-	live_lbl.add_theme_font_size_override("font_size", 26 if is_phone else 23)
-	live_lbl.add_theme_color_override("font_color", Color.WHITE)
-	live_lbl.add_theme_constant_override("line_spacing", 6)
-	live_lbl.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	live_box.add_child(live_lbl)
-	chat_root.add_child(live_box)
 	chat_sc = ScrollContainer.new()
 	chat_sc.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	chat_sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -949,10 +974,12 @@ func _ui_tick(delta: float) -> void:
 	meter_mic.value = lvl_mic if want_mic else 0.0
 	var anim_n := "off"
 	if state == ST_LINKED:
-		anim_n = "happy" if maxf(lvl_out, lvl_mic) > 0.04 else "idle"
+		anim_n = "happy" if maxf(lvl_out, lvl_mic) > 0.04 or (live_lbl != null and live_lbl.text != "") else "idle"
 	elif state == ST_WAIT:
 		anim_n = "wait"
 	orb.anim = anim_n
+	if live_box != null:
+		live_box.visible = want_subs
 	orb.variant = mascot
 	orb.level = maxf(meter_out.shown, meter_mic.shown) if state == ST_LINKED else 0.0
 	var col: Color = [C_IDLE, C_WAIT, C_OK][state]
@@ -1736,6 +1763,14 @@ func _pc_pump_subs() -> void:
 		_bubble(line)
 
 
+func _clear_subs() -> void:
+	for c in subs_rows.get_children():
+		c.queue_free()
+	blocks.clear()
+	transcript.clear()
+	_set_live("")
+
+
 func _set_live(t: String) -> void:
 	if live_lbl != null:
 		live_lbl.text = t if t.length() <= 84 else "…" + t.substr(t.length() - 82)  # on garde la fin, la boîte reste fixe
@@ -1774,6 +1809,9 @@ func _add_block(id: int, orig: String) -> void:
 	var at_end := subs_sc.scroll_vertical >= subs_sc.get_v_scroll_bar().max_value - subs_sc.size.y - 40
 	subs_rows.add_child(pc)
 	blocks[id] = v
+	transcript.append(orig)
+	while transcript.size() > 40:
+		transcript.pop_front()
 	var nb := subs_rows.get_child_count()
 	for i in nb:
 		subs_rows.get_child(i).modulate = Color(1, 1, 1, 1.0 if i >= nb - 1 else 0.6)
@@ -1916,6 +1954,8 @@ func _ai_ask(text: String, mode: int, from_phone: bool) -> void:
 	if from_phone and mode == 0:
 		_add_msg("me", "[color=#8892a0]📱[/color] " + _esc(text))
 	var msgs: Array = [{"role": "system", "content": PERSONA}]
+	if not transcript.is_empty():
+		msgs.append({"role": "system", "content": "Paroles entendues récemment sur le PC (sous-titres, de la plus ancienne à la plus récente) :\n" + "\n".join(transcript).right(3500)})
 	if mode == 0:
 		msgs.append_array(ai_hist)
 	msgs.append({"role": "user", "content": text})
