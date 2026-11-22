@@ -255,6 +255,9 @@ var th_subs: Thread
 var subs_ready := false
 var subs_out: Array = []
 var bubbles: VBoxContainer
+var subs_card: Control
+var subs_lbl: Label
+var subs_lines: Array = []
 var lvl_out := 0.0
 var lvl_mic := 0.0
 var rtt_ms := -1
@@ -650,6 +653,11 @@ func _build_ui() -> void:
 		add_child(bubbles)
 
 	if not is_phone:
+		subs_card = _card(content)
+		_label("Sous-titres en direct", 14, C_DIM, subs_card)
+		subs_card.get_parent().visible = want_subs
+		subs_lbl = _label("En attente de parole…", 20, C_TEXT, subs_card)
+		subs_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		var cph := _card(content)
 		var lt := Label.new()
 		lt.text = "Téléphones à l'écoute"
@@ -733,6 +741,8 @@ func _on_mic(on: bool) -> void:
 
 func _on_subs(on: bool) -> void:
 	want_subs = on
+	if subs_card != null:
+		subs_card.get_parent().visible = on
 	_save_pref()
 	if not is_phone:
 		_pc_subs_sync()
@@ -751,6 +761,8 @@ func _apply_ctrl_ui() -> void:
 	tog_sound.set_on(want_sound)
 	tog_mic.set_on(want_mic)
 	tog_subs.set_on(want_subs)
+	if subs_card != null:
+		subs_card.get_parent().visible = want_subs
 	vol_slider.set_value_no_signal(vol * 100.0)
 	if is_phone:
 		player.volume_db = linear_to_db(vol) if vol > 0.0 else -80.0
@@ -1105,6 +1117,12 @@ func _pc_scan() -> void:
 	if link_mode != 1:
 		for k in phones:
 			list.append({"key": k, "name": phones[k]["name"] + " · Wi-Fi"})
+	if linked and chosen != "" and chosen != "usb":
+		var found := false
+		for d in list:
+			found = found or d["key"] == chosen
+		if not found:  # le téléphone connecté n'émet plus de balise : on le garde dans la liste
+			list.append({"key": chosen, "name": (peer_name if peer_name != "" else "Téléphone") + " · connecté"})
 	var sig := chosen + "|" + str(linked)
 	for d in list:
 		sig += "|" + d["key"] + d["name"]
@@ -1410,6 +1428,11 @@ func _pc_pump_subs() -> void:
 	mtx.unlock()
 	for t: String in q:
 		_send(T_TEXT, t.to_utf8_buffer().slice(0, 1000))
+		subs_lines.append(t)
+		while subs_lines.size() > 4:
+			subs_lines.pop_front()
+		if subs_lbl != null:
+			subs_lbl.text = "\n".join(subs_lines)
 
 
 func _bubble(text: String) -> void:
