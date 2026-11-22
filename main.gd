@@ -401,7 +401,6 @@ func _load_pref() -> void:
 		link_mode = int(cf.get_value("net", "mode", 0))
 		vol = float(cf.get_value("audio", "vol", 1.0))
 		pin = str(cf.get_value("net", "pin", ""))
-		phone_pin = str(cf.get_value("net", "phone_pin", ""))
 		last_name = str(cf.get_value("net", "last", ""))
 		want_subs = bool(cf.get_value("audio", "subs", false))
 	if pin == "":
@@ -650,45 +649,7 @@ func _build_ui() -> void:
 		bubbles.offset_bottom = -40
 		add_child(bubbles)
 
-	if is_phone:
-		var cp := _card(content)
-		var lp := Label.new()
-		lp.text = "Code du PC (affiché sur le PC)"
-		lp.add_theme_color_override("font_color", C_DIM)
-		cp.add_child(lp)
-		var le := LineEdit.new()
-		le.placeholder_text = "vide = tout PC accepté"
-		le.max_length = 8
-		le.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_NUMBER
-		le.text = phone_pin
-		le.add_theme_font_size_override("font_size", 26)
-		le.text_changed.connect(func(t: String):
-			phone_pin = t.strip_edges()
-			_save_pref())
-		cp.add_child(le)
 	if not is_phone:
-		var cpin := _card(content)
-		var hp := HBoxContainer.new()
-		hp.add_theme_constant_override("separation", 12)
-		cpin.add_child(hp)
-		var lk := Label.new()
-		lk.text = "Code PIN"
-		lk.add_theme_color_override("font_color", C_DIM)
-		lk.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		hp.add_child(lk)
-		pin_lbl = Label.new()
-		pin_lbl.text = pin
-		pin_lbl.add_theme_font_size_override("font_size", 34)
-		hp.add_child(pin_lbl)
-		var nb := Button.new()
-		nb.text = "Nouveau"
-		nb.pressed.connect(_new_pin)
-		hp.add_child(nb)
-		var hint := Label.new()
-		hint.text = "À saisir dans l'app du téléphone (Wi-Fi). Il ne change que si tu le demandes."
-		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		hint.add_theme_color_override("font_color", C_DIM)
-		cpin.add_child(hint)
 		var cph := _card(content)
 		var lt := Label.new()
 		lt.text = "Téléphones à l'écoute"
@@ -956,7 +917,7 @@ func _phone_process(delta: float) -> void:
 		peer = np
 		rxbuf.clear()
 		linked = false
-		authed = phone_pin == "" or np.get_connected_host() == "127.0.0.1"
+		authed = true
 	if peer != null:
 		peer.poll()
 		var st := peer.get_status()
@@ -1149,6 +1110,8 @@ func _pc_scan() -> void:
 		sig += "|" + d["key"] + d["name"]
 	if test_mode and chosen == "" and not list.is_empty():
 		chosen = list[0]["key"]
+	if chosen == "" and not user_disc and not list.is_empty() and last_name == "":
+		chosen = list[0]["key"]  # un seul clic en moins : on se connecte au premier téléphone proposé
 	if chosen == "" and not user_disc and last_name != "":
 		for d in list:
 			if d["name"].begins_with(last_name):
