@@ -13,6 +13,7 @@ const VERSION := 3  # versionCode de l'APK
 const KTok := preload("res://kit/tokens.gd")
 const KPx := preload("res://kit/ui/px.gd")
 const KPixelize := preload("res://kit/pixelize.gd")
+const LessonScript := preload("res://lesson.gd")
 const APP_VERSION: String = preload("res://version.gd").VERSION
 const T_AUDIO := 1  # PC -> téléphone : PCM s16 stéréo 48 kHz
 const T_MIC := 2  # téléphone -> PC : PCM s16 mono
@@ -293,9 +294,15 @@ var pop_layer: Control
 var pop_word: Label
 var pop_text: Label
 var subs_sc: ScrollContainer
-var subs_rows: VBoxContainer
+var subs_rows: Container
 var blocks := {}  # id de bloc -> VBox
 var live_box: Control
+var land := false  # paysage : salle de classe, conférence en diaporama (lesson.gd)
+var lesson: Control
+var chat_root_n: VBoxContainer
+var margin_n: Control
+var vbox_rows: VBoxContainer
+var block_data: Array = []  # [{id, text, trans}]
 var transcript: Array = []  # phrases entendues (contexte pour l'assistant)
 var live_lbl: Label  # mots en direct (hypothèse en cours), avant la fin de la phrase
 var sub_delay := 0.0  # secondes de décalage du son (pour avoir le temps de lire)
@@ -391,6 +398,8 @@ func _ready() -> void:
 	_load_pref()
 	KTok.set_pixel(true)
 	_build_ui()
+	if OS.get_environment("POCKET_DEMO") == "1":
+		_demo.call_deferred()
 	KPixelize.install(self)
 	if is_phone:
 		_phone_init()
@@ -603,6 +612,7 @@ func _build_ui() -> void:
 	var center := CenterContainer.new()
 	center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	margin.add_child(center)
+	margin_n = scroll
 	content = VBoxContainer.new()
 	content.add_theme_constant_override("separation", 16)
 	content.custom_minimum_size = Vector2(440, 0)
@@ -840,6 +850,7 @@ func _build_ui() -> void:
 		content.add_child(seg)
 	content = main_content
 	var chat_root := VBoxContainer.new()
+	chat_root_n = chat_root
 	chat_root.set_anchors_preset(Control.PRESET_FULL_RECT)
 	chat_root.anchor_top = 0.45
 	chat_root.offset_left = 14
@@ -866,6 +877,16 @@ func _build_ui() -> void:
 	subs_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	subs_rows.add_theme_constant_override("separation", 6)
 	subs_sc.add_child(subs_rows)
+	vbox_rows = subs_rows
+	lesson = LessonScript.new()
+	lesson.master = not is_phone
+	lesson.make_label = func(t: String, col: String, fs: int) -> Control:
+		var lw := []
+		return _sub_label(_linkify(t, col, lw), t, fs, lw)
+	lesson.slide_changed.connect(_on_slide)
+	lesson.visible = false
+	add_child(lesson)
+	move_child(lesson, 1)
 	chat_sc = ScrollContainer.new()
 	chat_sc.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	chat_sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -980,6 +1001,10 @@ func _ui_tick(delta: float) -> void:
 	orb.anim = anim_n
 	if live_box != null:
 		live_box.visible = want_subs
+		var vp := get_viewport_rect().size
+		var want_land := vp.x > vp.y * 1.2 and want_subs and chat_root_n != null
+		if want_land != land and chat_root_n != null:
+			_set_land(want_land)
 	orb.variant = mascot
 	orb.level = maxf(meter_out.shown, meter_mic.shown) if state == ST_LINKED else 0.0
 	var col: Color = [C_IDLE, C_WAIT, C_OK][state]
@@ -1763,11 +1788,30 @@ func _pc_pump_subs() -> void:
 		_bubble(line)
 
 
+## Aperçu sans voix (POCKET_DEMO=1) : une petite conférence qui arrive phrase par phrase ; POCKET_SHOT=fichier.png capture puis quitte.
+func _demo() -> void:
+	want_subs = true
+	var txt := ["Bonjour à tous, bienvenue dans cette conférence sur le système solaire.", "Notre système solaire compte huit planètes qui tournent autour du Soleil.",
+		"Mercure est la plus proche du Soleil et Neptune la plus lointaine.", "La Terre est la seule planète où l'on a trouvé de la vie.",
+		"Passons maintenant aux missions spatiales des dernières années.", "En 2021, le rover Perseverance a atterri sur Mars.",
+		"Il cherche des traces de vie ancienne dans les roches martiennes.", "Le télescope James Webb observe des galaxies très lointaines."]
+	for i in txt.size():
+		_add_block(i + 1, txt[i])
+		await get_tree().create_timer(1.2).timeout
+	var shot := OS.get_environment("POCKET_SHOT")
+	if shot != "":
+		await get_tree().create_timer(6.0).timeout
+		get_viewport().get_texture().get_image().save_png(shot)
+		get_tree().quit()
+
+
 func _clear_subs() -> void:
 	for c in subs_rows.get_children():
 		c.queue_free()
 	blocks.clear()
+	block_data.clear()
 	transcript.clear()
+	lesson.clear()
 	_set_live("")
 
 
@@ -1779,6 +1823,13 @@ func _set_live(t: String) -> void:
 func _bubble(text: String) -> void:
 	if text.begins_with("\u0006"):
 		_set_live(text.substr(1))
+	elif text.begins_with("\u0009"):
+		var parts := text.substr(1).split("\u001f")
+		if parts.size() >= 3:
+			var ids: Array = []
+			for x in parts[2].split(",", false):
+				ids.append(int(x))
+			lesson.apply_slide(int(parts[0]), parts[1], ids)
 	elif text.begins_with("\u0007") or text.begins_with("\u0008"):
 		var k := text.find("\u001f")
 		if k > 1:
@@ -1791,27 +1842,34 @@ func _bubble(text: String) -> void:
 
 ## Un bloc par phrase terminée (chronologique, le plus récent en bas) ; la traduction s'ajoute dessous quand elle arrive.
 func _add_block(id: int, orig: String) -> void:
-	if subs_rows == null:
-		return
-	var pc := PixBox.new(Color(0.04, 0.05, 0.07), Color(0.42, 0.5, 0.52), 14)
-	pc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 4)
-	pc.add_child(v)
-	var tm := Label.new()
-	tm.text = Time.get_time_string_from_system()
-	tm.add_theme_font_size_override("font_size", 12)
-	tm.add_theme_color_override("font_color", Color("9aa5b1"))
-	v.add_child(tm)
-	var fs := 26 if is_phone else 23
-	var lw := []
-	v.add_child(_sub_label(_linkify(orig, "#ffffff", lw), orig, fs, lw))
-	var at_end := subs_sc.scroll_vertical >= subs_sc.get_v_scroll_bar().max_value - subs_sc.size.y - 40
-	subs_rows.add_child(pc)
-	blocks[id] = v
+	block_data.append({"id": id, "text": orig, "trans": ""})
+	while block_data.size() > 200:
+		block_data.pop_front()
 	transcript.append(orig)
 	while transcript.size() > 40:
 		transcript.pop_front()
+	_build_block(id, orig)
+	lesson.add_sentence(id, orig)
+
+
+func _build_block(id: int, orig: String) -> void:
+	if subs_rows == null:
+		return
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 4)
+	var pc := PixBox.new(Color(0.04, 0.05, 0.07), Color(0.42, 0.5, 0.52), 14)
+	var tm2 := Label.new()
+	tm2.text = Time.get_time_string_from_system()
+	tm2.add_theme_font_size_override("font_size", 12)
+	tm2.add_theme_color_override("font_color", Color("9aa5b1"))
+	v.add_child(tm2)
+	pc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	pc.add_child(v)
+	var lw := []
+	v.add_child(_sub_label(_linkify(orig, "#ffffff", lw), orig, 26 if is_phone else 23, lw))
+	var at_end := subs_sc.scroll_vertical >= subs_sc.get_v_scroll_bar().max_value - subs_sc.size.y - 40
+	subs_rows.add_child(pc)
+	blocks[id] = v
 	var nb := subs_rows.get_child_count()
 	for i in nb:
 		subs_rows.get_child(i).modulate = Color(1, 1, 1, 1.0 if i >= nb - 1 else 0.6)
@@ -1826,11 +1884,40 @@ func _add_block(id: int, orig: String) -> void:
 
 
 func _set_trans(id: int, t: String) -> void:
+	lesson.set_trans(id, t)
+	for d in block_data:
+		if d["id"] == id:
+			d["trans"] = t
+	_show_trans(id, t)
+
+
+func _show_trans(id: int, t: String) -> void:
 	if not blocks.has(id) or not is_instance_valid(blocks[id]):
 		return
 	var rw := []
-	var l := _sub_label(_linkify(t, "#ffd45e", rw), t, 23 if is_phone else 20, rw)
-	blocks[id].add_child(l)
+	blocks[id].add_child(_sub_label(_linkify(t, "#ffd45e", rw), t, 23 if is_phone else 20, rw))
+
+
+## Bascule portrait <-> paysage : en paysage, salle de classe + diaporama ; la zone d'assistant passe sous la mascotte.
+func _set_land(on: bool) -> void:
+	land = on
+	lesson.visible = on
+	subs_sc.visible = not on
+	if on:
+		chat_root_n.anchor_right = 0.34
+		chat_root_n.anchor_top = 0.62
+		margin_n.anchor_right = 0.34
+		live_box.custom_minimum_size.y = 120
+	else:
+		chat_root_n.anchor_right = 1.0
+		chat_root_n.anchor_top = 0.45
+		margin_n.anchor_right = 1.0
+		live_box.custom_minimum_size.y = 150
+
+
+func _on_slide(sid: int, title: String, ids: Array) -> void:
+	if not is_phone and linked:
+		_send(T_TEXT, ("\u0009%d\u001f%s\u001f%s" % [sid, title, ",".join(ids.map(func(i): return str(i)))]).to_utf8_buffer().slice(0, 1000))
 
 
 func _sub_label(bb: String, plain: String, fs: int, words: Array) -> RichTextLabel:
