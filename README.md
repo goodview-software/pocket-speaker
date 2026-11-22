@@ -13,3 +13,5 @@ Mascotte : la variante choisie dans le Goodview Launcher (profil partagé `~/.co
 Note : sur le Wi-Fi, le téléphone accepte toute connexion entrante (pas d'appairage pour l'instant).
 
 **Sous-titres (Whisper)** : le bouton « Sous-titres en bulles » (PC ou téléphone) lance `tools/whisper_stream.py` (openai-whisper, GPU si dispo, modèle `small`, `POCKET_WHISPER=medium` pour changer) sur le son du PC et affiche en bulles, sur l'écran du téléphone, ce qui est compris (langue détectée automatiquement). Le son doit passer par Pocket Speaker (« Son » activé). Prérequis : `python3` avec `openai-whisper`.
+
+**Bulle flottante (Android)** : en quittant l'app, un service de premier plan + une bulle « par-dessus les autres applis » (état, coupure son/micro, toucher = rouvre). Plugin Java dans `android/build/src/main/java/fr/goodview/overlay` (build gradle ; `android/build/libs` = template, à réinstaller depuis `android_source.zip` sur un clone neuf).

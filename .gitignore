@@ -1,3 +1,6 @@
 .godot/
-build/
+/build/
 *.keystore
+android/build/build/
+android/build/.gradle/
+android/build/libs/

@@ -892,6 +892,7 @@ func _on_frame(t: int, pl: PackedByteArray) -> void:
 
 func _phone_init() -> void:
 	DisplayServer.screen_set_keep_on(true)
+	_overlay_init()
 	var gen := AudioStreamGenerator.new()
 	gen.mix_rate = RATE
 	gen.buffer_length = 0.25
@@ -922,6 +923,24 @@ func _phone_init() -> void:
 	beacon.set_broadcast_enabled(true)
 	beacon.set_dest_address("255.255.255.255", BEACON_PORT)
 	_on_vol(vol * 100.0)
+
+
+## Bulle flottante quand l'app passe en arrière-plan (Android + plugin PocketOverlay uniquement).
+func _overlay_init() -> void:
+	var ov: Node = preload("res://kit/overlay/overlay.gd").new()
+	add_child(ov)
+	if not ov.available():
+		return
+	ov.state_fn = func() -> Dictionary:
+		return {"ok": linked, "text": "Connecté" if linked else "Hors ligne", "buttons": true, "sound": want_sound, "mic": want_mic}
+	ov.action.connect(func(a: String):
+		if a == "sound":
+			tog_sound.set_on(not want_sound)
+			_on_sound(not want_sound)
+		elif a == "mic":
+			tog_mic.set_on(not want_mic)
+			_on_mic(not want_mic))
+	preload("res://kit/overlay/overlay_ask.gd").ask_once(self, ov, "Pocket Speaker", "user://overlay.cfg")
 
 
 func _phone_name() -> String:

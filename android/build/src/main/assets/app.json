@@ -1,0 +1,5 @@
+{
+  "name": "Pocket Speaker",
+  "tagline": "Ton téléphone devient l'enceinte et le micro de ton PC.",
+  "description": "Branche ton téléphone en USB (ou même Wi-Fi) : le son du PC sort sur le téléphone et son micro devient le micro du PC. Interface simple avec niveaux en direct, volume et mascotte animée.\n\nPrérequis PC : adb, pactl, parec, pacat. L'app Android est installée automatiquement en USB."
+}
