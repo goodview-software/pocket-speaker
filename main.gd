@@ -264,6 +264,9 @@ var press_t := -1.0
 var subs_card: Control
 var chat_sc: ScrollContainer
 var chat_in: LineEdit
+var pop_layer: Control
+var pop_word: Label
+var pop_text: Label
 var subs_sc: ScrollContainer
 var subs_rows: VBoxContainer
 var sub_delay := 0.0  # secondes de décalage du son (pour avoir le temps de lire)
@@ -828,6 +831,45 @@ func _build_ui() -> void:
 	clrb.text = "Effacer"
 	clrb.pressed.connect(_chat_clear)
 	crow.add_child(clrb)
+	pop_layer = Control.new()
+	pop_layer.set_anchors_preset(Control.PRESET_FULL_RECT)
+	pop_layer.visible = false
+	var pdim := ColorRect.new()
+	pdim.color = Color(0, 0, 0, 0.55)
+	pdim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	pdim.gui_input.connect(func(e: InputEvent):
+		if e is InputEventMouseButton and e.pressed:
+			pop_layer.visible = false)
+	pop_layer.add_child(pdim)
+	var pcen := CenterContainer.new()
+	pcen.set_anchors_preset(Control.PRESET_FULL_RECT)
+	pcen.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	pop_layer.add_child(pcen)
+	var ppan := PanelContainer.new()
+	var psb := StyleBoxFlat.new()
+	psb.bg_color = C_CARD
+	psb.border_color = C_OK
+	psb.set_border_width_all(2)
+	psb.set_corner_radius_all(14)
+	for sd in ["left", "right", "top", "bottom"]:
+		psb.set("content_margin_" + sd, 20)
+	ppan.add_theme_stylebox_override("panel", psb)
+	ppan.custom_minimum_size.x = clampf(get_viewport_rect().size.x - 60.0, 260.0, 520.0)
+	pcen.add_child(ppan)
+	var pv := VBoxContainer.new()
+	pv.add_theme_constant_override("separation", 12)
+	ppan.add_child(pv)
+	pop_word = _label("", 28, C_OK, pv)
+	pop_word.add_theme_font_override("font", INTER)
+	pop_text = _label("", 19, C_TEXT, pv)
+	pop_text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	pop_text.add_theme_font_override("font", INTER)
+	var pcl := Button.new()
+	pcl.text = "Fermer"
+	pcl.custom_minimum_size = Vector2(0, 44)
+	pcl.pressed.connect(func(): pop_layer.visible = false)
+	pv.add_child(pcl)
+	add_child(pop_layer)
 	add_child(settings_layer)
 	_fit_width()
 
@@ -997,7 +1039,11 @@ func _on_frame(t: int, pl: PackedByteArray) -> void:
 				rtt_ms = int(Time.get_ticks_msec() - pl.decode_u32(0)) & 0xFFFF
 		T_ANS:
 			if is_phone:
-				_add_msg("ai", pl.get_string_from_utf8())
+				var at := pl.get_string_from_utf8()
+				if at.begins_with("\u0004"):
+					pop_text.text = at.substr(1)
+				else:
+					_add_msg("ai", at)
 		T_ASK:
 			if not is_phone and pl.size() >= 2:
 				_ai_ask(pl.slice(1).get_string_from_utf8(), pl[0], true)
@@ -1661,7 +1707,8 @@ func _add_sub(orig: String, trans: String) -> void:
 	row.set_anchors_preset(Control.PRESET_TOP_WIDE)
 	clip.add_child(row)
 	var fs := 21 if is_phone else 19
-	var left := _sub_label(_linkify(orig, "#e8ecf1"), orig, fs)
+	var lw := []
+	var left := _sub_label(_linkify(orig, "#e8ecf1", lw), orig, fs, lw)
 	row.add_child(left)
 	if trans != "":
 		var ar := Label.new()
@@ -1670,7 +1717,8 @@ func _add_sub(orig: String, trans: String) -> void:
 		ar.add_theme_font_size_override("font_size", fs)
 		ar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		row.add_child(ar)
-		row.add_child(_sub_label(_linkify(trans, "#4de1b4"), trans, fs))
+		var rw := []
+		row.add_child(_sub_label(_linkify(trans, "#4de1b4", rw), trans, fs, rw))
 	subs_rows.add_child(clip)
 	subs_rows.move_child(clip, 0)
 	clip.custom_minimum_size.y = 0.0
@@ -1690,7 +1738,7 @@ func _add_sub(orig: String, trans: String) -> void:
 	subs_sc.scroll_vertical = 0
 
 
-func _sub_label(bb: String, plain: String, fs: int) -> RichTextLabel:
+func _sub_label(bb: String, plain: String, fs: int, words: Array) -> RichTextLabel:
 	var l := RichTextLabel.new()
 	l.bbcode_enabled = true
 	l.fit_content = true
@@ -1702,21 +1750,25 @@ func _sub_label(bb: String, plain: String, fs: int) -> RichTextLabel:
 	l.add_theme_font_override("normal_font", INTER)
 	l.add_theme_font_size_override("normal_font_size", fs)
 	l.text = bb
-	l.meta_clicked.connect(func(m: Variant): _explain(str(m), plain))
+	l.meta_clicked.connect(func(m: Variant): _explain(str(words[int(str(m))]), plain))
 	return l
 
 
-## Chaque mot devient cliquable (explication par la mascotte).
-func _linkify(t: String, col: String) -> String:
+## Chaque mot devient cliquable (définition). Les métas sont des index : une apostrophe dans [url=…] casserait le bbcode.
+func _linkify(t: String, col: String, words: Array) -> String:
 	var out := "[color=" + col + "]"
 	var re := RegEx.create_from_string("[\\p{L}][\\p{L}\\p{N}'’-]*")
 	var p := 0
 	for m in re.search_all(t):
-		out += t.substr(p, m.get_start() - p).replace("[", "[lb]")
-		var w := m.get_string()
-		out += "[url=" + w + "]" + w + "[/url]"
+		out += _esc(t.substr(p, m.get_start() - p))
+		words.append(m.get_string())
+		out += "[url=%d]%s[/url]" % [words.size() - 1, m.get_string()]
 		p = m.get_end()
-	return out + t.substr(p).replace("[", "[lb]") + "[/color]"
+	return out + _esc(t.substr(p)) + "[/color]"
+
+
+func _esc(t: String) -> String:
+	return t.replace("[", "[lb]").replace("]", "[rb]")
 
 
 ## kind : "sub" (parole), "me" (ma question), "ai" (réponse de Goody).
@@ -1777,14 +1829,18 @@ func _chat_send() -> void:
 	if t == "":
 		return
 	chat_in.text = ""
-	_add_msg("me", t.replace("[", "[lb]"))
+	_add_msg("me", _esc(t))
 	_ask(t, 0)
 
 
 func _explain(word: String, sentence: String) -> void:
-	var lang: String = LANGS[sub_target][1] if sub_target > 0 else "Français"
-	_add_msg("me", "ⓘ " + word)
-	_ask("Explique brièvement (1 à 2 phrases) le mot « %s » dans la phrase « %s ». Réponds en %s." % [word, sentence, lang], 1)
+	var extra := ""
+	if sub_target > 0:
+		extra = " Ajoute ensuite, sur une nouvelle ligne, la définition en %s." % LANGS[sub_target][1]
+	pop_word.text = word
+	pop_text.text = "…"
+	pop_layer.visible = true
+	_ask("Définis le mot « %s » tel qu'il est utilisé dans la phrase « %s ». Donne d'abord la définition en français (1 à 2 phrases), puis un court exemple.%s" % [word, sentence, extra], 2)
 
 
 func _ask(text: String, mode: int) -> void:
@@ -1800,7 +1856,7 @@ func _ask(text: String, mode: int) -> void:
 ## PC : interroge Ollama (local) et affiche / renvoie la réponse de la mascotte.
 func _ai_ask(text: String, mode: int, from_phone: bool) -> void:
 	if from_phone and mode == 0:
-		_add_msg("me", "[color=#8892a0]📱[/color] " + text.replace("[", "[lb]"))
+		_add_msg("me", "[color=#8892a0]📱[/color] " + _esc(text))
 	var msgs: Array = [{"role": "system", "content": PERSONA}]
 	if mode == 0:
 		msgs.append_array(ai_hist)
@@ -1821,7 +1877,13 @@ func _ai_ask(text: String, mode: int, from_phone: bool) -> void:
 			ai_hist.append({"role": "assistant", "content": ans})
 			while ai_hist.size() > 12:
 				ai_hist.pop_front()
-		_add_msg("ai", ans.replace("[", "[lb]"))
+		if mode == 2:
+			if from_phone:
+				_send(T_ANS, ("\u0004" + ans).to_utf8_buffer().slice(0, 60000))
+			else:
+				pop_text.text = ans
+			return
+		_add_msg("ai", _esc(ans))
 		if from_phone:
 			_send(T_ANS, ans.to_utf8_buffer().slice(0, 60000)))
 	var err := http.request("http://127.0.0.1:11434/api/chat", ["Content-Type: application/json"], HTTPClient.METHOD_POST,
