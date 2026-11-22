@@ -1,2 +1,2 @@
 ## Version du programme (mise à jour par release.sh).
-const VERSION := "0.11.0"
+const VERSION := "0.12.0"
