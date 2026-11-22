@@ -1,12 +1,27 @@
 #!/usr/bin/python3
 """Sous-titres en direct : lit du PCM s16le stéréo 48 kHz sur stdin, écrit une ligne de texte (Whisper) par phrase sur stdout.
-Usage : whisper_stream.py [modèle=small] [langue=auto]"""
-import sys, os, re, threading, queue
+Usage : whisper_stream.py [modèle=small] [langue=auto] [traduction=none|es|en|fr|de|it|pt]
+Sortie : « texte » ou « texte\x02traduction » (traduction via Ollama, gemma3:4b)."""
+import sys, os, re, json, threading, queue, urllib.request
 import numpy as np
 import whisper
 
 model_name = sys.argv[1] if len(sys.argv) > 1 else "small"
 lang = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] != "auto" else None
+target = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] != "none" else None
+NAMES = {"es": "espagnol", "en": "anglais", "fr": "français", "de": "allemand", "it": "italien", "pt": "portugais"}
+OLLAMA = os.environ.get("POCKET_OLLAMA", "http://127.0.0.1:11434")
+TMODEL = os.environ.get("POCKET_TRANSLATE_MODEL", "gemma3:4b")
+
+def translate(t):
+    body = {"model": TMODEL, "stream": False, "keep_alive": "30m", "options": {"num_predict": 200, "temperature": 0},
+            "prompt": "Traduis ce texte en %s. Réponds uniquement par la traduction, sans commentaire.\n\n%s" % (NAMES.get(target, target), t)}
+    try:
+        rq = urllib.request.Request(OLLAMA + "/api/generate", json.dumps(body).encode(), {"Content-Type": "application/json"})
+        out = json.load(urllib.request.urlopen(rq, timeout=20))["response"].strip()
+        return out if out and out.lower() != t.lower() else None
+    except Exception:
+        return None
 import torch
 dev = "cuda" if torch.cuda.is_available() else "cpu"
 model = whisper.load_model(model_name, device=dev)
@@ -44,7 +59,8 @@ def flush(a):
     for s in r["segments"]:
         t = s["text"].strip()
         if t and s["no_speech_prob"] < 0.6 and not BAD.search(t):
-            print(t, flush=True)
+            tr = translate(t) if target else None
+            print(t + ("\x02" + tr.replace("\n", " ") if tr else ""), flush=True)
 
 threading.Thread(target=reader, daemon=True).start()
 while True:

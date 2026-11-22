@@ -22,6 +22,7 @@ const T_CTRL := 5  # [son u8, micro u8, volume 0-100 u8, sous-titres u8] (dans l
 const T_PIN := 9  # PC -> téléphone : code PIN affiché sur le PC
 const T_DENY := 10  # téléphone -> PC : code refusé
 const T_TEXT := 11  # PC -> téléphone : phrase comprise par Whisper (UTF-8)
+const LANGS := [["none", "Aucune"], ["es", "Español"], ["en", "English"], ["fr", "Français"], ["de", "Deutsch"], ["it", "Italiano"], ["pt", "Português"]]
 const T_PING := 7
 const T_PONG := 8
 const SINK := "pocket_out"
@@ -259,6 +260,10 @@ var settings_layer: Control
 var settings_box: VBoxContainer
 var press_t := -1.0
 var subs_card: Control
+var chat_sc: ScrollContainer
+var sub_target := 0  # langue de traduction (index dans LANGS, 0 = aucune)
+var subs_target_run := -1
+var opt_lang: OptionButton
 var subs_lbl: Label
 var subs_lines: Array = []
 var lvl_out := 0.0
@@ -409,6 +414,7 @@ func _load_pref() -> void:
 		pin = str(cf.get_value("net", "pin", ""))
 		last_name = str(cf.get_value("net", "last", ""))
 		want_subs = bool(cf.get_value("audio", "subs", false))
+		sub_target = int(cf.get_value("audio", "target", 0))
 	if pin == "":
 		_new_pin()
 
@@ -428,6 +434,7 @@ func _save_pref() -> void:
 	cf.set_value("net", "phone_pin", phone_pin)
 	cf.set_value("net", "last", last_name)
 	cf.set_value("audio", "subs", want_subs)
+	cf.set_value("audio", "target", sub_target)
 	cf.save("user://pref.cfg")
 
 
@@ -571,15 +578,6 @@ func _build_ui() -> void:
 	orb = Orb.new()
 	orb.custom_minimum_size = Vector2(0, 230)
 	content.add_child(orb)
-	if not is_phone:  # PC : bulles à droite de la mascotte
-		bubbles = VBoxContainer.new()
-		bubbles.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		bubbles.alignment = BoxContainer.ALIGNMENT_CENTER
-		bubbles.add_theme_constant_override("separation", 6)
-		bubbles.anchor_left = 0.6
-		bubbles.anchor_right = 1.0
-		bubbles.anchor_bottom = 1.0
-		orb.add_child(bubbles)
 	status = _label("", 22, C_TEXT, content)
 	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sub = _label("", 14, C_DIM, content)
@@ -699,23 +697,26 @@ func _build_ui() -> void:
 	tog_subs.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	r3.add_child(tog_subs)
 
-	if is_phone:
-		bubbles = VBoxContainer.new()
-		bubbles.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		bubbles.alignment = BoxContainer.ALIGNMENT_END
-		bubbles.add_theme_constant_override("separation", 8)
-		bubbles.set_anchors_preset(Control.PRESET_FULL_RECT)
-		bubbles.offset_left = 14
-		bubbles.offset_right = -14
-		bubbles.offset_bottom = -40
-		add_child(bubbles)
+	var c4 := _card(content)
+	var r4 := HBoxContainer.new()
+	r4.add_theme_constant_override("separation", 14)
+	c4.add_child(r4)
+	var l4 := _label("Traduire les paroles en", 16, C_TEXT, r4)
+	l4.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	l4.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	opt_lang = OptionButton.new()
+	for l in LANGS:
+		opt_lang.add_item(l[1])
+	opt_lang.select(sub_target)
+	opt_lang.item_selected.connect(func(i: int):
+		sub_target = i
+		_save_pref()
+		if not is_phone:
+			_pc_subs_sync()
+		_send_ctrl())
+	r4.add_child(opt_lang)
 
 	if not is_phone:
-		subs_card = _card(content)
-		_label("Sous-titres en direct", 14, C_DIM, subs_card)
-		subs_card.get_parent().visible = want_subs
-		subs_lbl = _label("En attente de parole…", 20, C_TEXT, subs_card)
-		subs_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		var cph := _card(content)
 		var lt := Label.new()
 		lt.text = "Téléphones à l'écoute"
@@ -741,6 +742,23 @@ func _build_ui() -> void:
 			_save_pref())
 		content.add_child(seg)
 	content = main_content
+	chat_sc = ScrollContainer.new()
+	chat_sc.set_anchors_preset(Control.PRESET_FULL_RECT)
+	chat_sc.anchor_top = 0.5
+	chat_sc.offset_left = 14
+	chat_sc.offset_right = -14
+	chat_sc.offset_bottom = -14
+	chat_sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	add_child(chat_sc)
+	bubbles = VBoxContainer.new()
+	bubbles.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bubbles.size_flags_vertical = Control.SIZE_SHRINK_END
+	bubbles.add_theme_constant_override("separation", 8)
+	var chat_wrap := VBoxContainer.new()
+	chat_wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	chat_wrap.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	chat_wrap.add_child(bubbles)
+	chat_sc.add_child(chat_wrap)
 	add_child(settings_layer)
 	_fit_width()
 
@@ -848,7 +866,7 @@ func _send(t: int, data: PackedByteArray) -> void:
 
 func _send_ctrl() -> void:
 	if linked:
-		_send(T_CTRL, PackedByteArray([1 if want_sound else 0, 1 if want_mic else 0, int(vol * 100.0), 1 if want_subs else 0]))
+		_send(T_CTRL, PackedByteArray([1 if want_sound else 0, 1 if want_mic else 0, int(vol * 100.0), 1 if want_subs else 0, sub_target]))
 
 
 ## Lit les trames reçues ; retourne false si la connexion est perdue.
@@ -885,6 +903,9 @@ func _on_frame(t: int, pl: PackedByteArray) -> void:
 				vol = pl[2] / 100.0
 				if pl.size() >= 4:
 					want_subs = pl[3] == 1
+					if pl.size() >= 5:
+						sub_target = clampi(pl[4], 0, LANGS.size() - 1)
+						opt_lang.select(sub_target)
 					if not is_phone:
 						_pc_subs_sync()
 				_apply_ctrl_ui()
@@ -1442,13 +1463,15 @@ func _subs_script() -> String:
 ## Démarre ou arrête Whisper selon « sous-titres » et l'état de la liaison.
 func _pc_subs_sync() -> void:
 	if want_subs and linked:
+		if subs_pid > 0 and subs_target_run != sub_target:
+			_pc_subs_stop()
 		if subs_pid <= 0:
 			var sc := _subs_script()
 			if sc == "":
 				return
 			var model := OS.get_environment("POCKET_WHISPER") if OS.get_environment("POCKET_WHISPER") != "" else "small"
 			var cmd := "python3"
-			var args := PackedStringArray([sc, model, "auto"])
+			var args := PackedStringArray([sc, model, "auto", LANGS[sub_target][0]])
 			if OS.get_environment("FLATPAK_ID") != "":  # le Python du sandbox n'a pas Whisper : on lance sur l'hôte
 				cmd = "flatpak-spawn"
 				args = PackedStringArray(["--host", "--watch-bus", "python3"]) + args
@@ -1457,6 +1480,7 @@ func _pc_subs_sync() -> void:
 				subs_pid = io["pid"]
 				subs_io = io["stdio"]
 				subs_ready = false
+				subs_target_run = sub_target
 				th_subs = Thread.new()
 				th_subs.start(_subs_loop)
 	else:
@@ -1514,8 +1538,13 @@ func _pc_pump_subs() -> void:
 func _bubble(text: String) -> void:
 	if bubbles == null or text.strip_edges() == "":
 		return
+	var parts := text.split("\u0002")
+	var orig := parts[0].replace("[", "[lb]")
+	var bb := "[color=#e8ecf1]" + orig + "[/color]"
+	if parts.size() > 1:  # traduction : le texte d'origine est barré, remplacé par la traduction
+		bb = "[color=#8892a0][s]" + orig + "[/s][/color]\n[color=#4de1b4]" + parts[1].replace("[", "[lb]") + "[/color]"
 	var pc := PanelContainer.new()
-	pc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	pc.mouse_filter = Control.MOUSE_FILTER_PASS
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.09, 0.11, 0.14, 0.92)
 	sb.border_color = Color(C_OK, 0.6)
@@ -1526,17 +1555,20 @@ func _bubble(text: String) -> void:
 	sb.content_margin_top = 10
 	sb.content_margin_bottom = 10
 	pc.add_theme_stylebox_override("panel", sb)
-	var l := Label.new()
-	l.text = text
+	var l := RichTextLabel.new()
+	l.bbcode_enabled = true
+	l.fit_content = true
+	l.scroll_active = false
+	l.mouse_filter = Control.MOUSE_FILTER_PASS
 	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	l.add_theme_font_size_override("font_size", 20 if is_phone else 15)
-	l.add_theme_color_override("font_color", C_TEXT)
+	l.add_theme_font_size_override("normal_font_size", 20 if is_phone else 17)
+	l.text = bb
 	pc.add_child(l)
 	bubbles.add_child(pc)
-	while bubbles.get_child_count() > (4 if is_phone else 3):
-		bubbles.get_child(0).queue_free()
-		bubbles.remove_child(bubbles.get_child(0))
-	var tw := pc.create_tween()
-	tw.tween_interval(3.0 + text.length() * 0.06)
-	tw.tween_property(pc, "modulate:a", 0.0, 0.6)
-	tw.tween_callback(pc.queue_free)
+	while bubbles.get_child_count() > 150:
+		var old := bubbles.get_child(0)
+		bubbles.remove_child(old)
+		old.queue_free()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	chat_sc.scroll_vertical = int(chat_sc.get_v_scroll_bar().max_value)
