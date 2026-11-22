@@ -9,7 +9,7 @@ const PORT := 5105
 const BEACON_PORT := PORT + 1  # téléphone -> réseau (UDP) : "POCKET"
 const RATE := 48000
 const PKG := "fr.goodview.pocketspeaker"
-const VERSION := 900  # versionCode de l'APK
+const VERSION := 1000  # versionCode de l'APK
 const KTok := preload("res://kit/tokens.gd")
 const KPx := preload("res://kit/ui/px.gd")
 const KPixelize := preload("res://kit/pixelize.gd")
@@ -1049,7 +1049,7 @@ func _ui_tick(delta: float) -> void:
 	if live_box != null:
 		live_box.visible = want_subs
 		var vp := get_viewport_rect().size
-		var want_land := vp.x > vp.y * 1.2 and want_subs and chat_root_n != null
+		var want_land := false  # mode paysage retiré (la salle 3D reste accessible avec Tab)
 		if want_land != land and chat_root_n != null and not mode3d:
 			_set_land(want_land)
 		if mode3d and room3d != null:
