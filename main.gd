@@ -307,7 +307,6 @@ var deny_t := -100000
 var phones_box: VBoxContainer
 var phones_sig := ""
 var pin_lbl: Label
-var disc_btn: Button
 var mic_rate := 48000
 var linked_t := 0.0
 var mascot := 0  # variante de Goody choisie dans le Goodview Launcher (profil partagé)
@@ -317,7 +316,12 @@ var mascot_t := 0.0
 var orb: Orb
 var status: Label
 var sub: Label
-var chip: Label
+var chip: Button
+var pair_layer: Control
+var pair_btn: Button
+var pair_info: Label
+var sel_name := ""
+var sel_key := ""  # appareil sélectionné dans la liste (connexion seulement après confirmation)
 var chip_sb: StyleBoxFlat
 var ico_sound: Icon
 var ico_mic: Icon
@@ -600,16 +604,20 @@ func _build_ui() -> void:
 	var sp := Control.new()
 	sp.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	head.add_child(sp)
-	var chip_p := PanelContainer.new()
 	chip_sb = StyleBoxFlat.new()
 	chip_sb.set_corner_radius_all(14)
-	chip_sb.content_margin_left = 12
-	chip_sb.content_margin_right = 12
-	chip_sb.content_margin_top = 4
-	chip_sb.content_margin_bottom = 4
-	chip_p.add_theme_stylebox_override("panel", chip_sb)
-	head.add_child(chip_p)
-	chip = _label("", 14, C_DIM, chip_p)
+	chip_sb.content_margin_left = 14
+	chip_sb.content_margin_right = 14
+	chip_sb.content_margin_top = 6
+	chip_sb.content_margin_bottom = 6
+	chip = Button.new()
+	chip.text = "Pairing"
+	chip.focus_mode = Control.FOCUS_NONE
+	chip.add_theme_font_size_override("font_size", 15)
+	for st in ["normal", "hover", "pressed", "focus"]:
+		chip.add_theme_stylebox_override(st, chip_sb)
+	chip.pressed.connect(func(): pair_layer.visible = true)
+	head.add_child(chip)
 
 	var orb_row := HBoxContainer.new()
 	orb_row.add_theme_constant_override("separation", 22)
@@ -780,31 +788,7 @@ func _build_ui() -> void:
 			_pc_subs_sync())
 		r4b.add_child(opt_src)
 
-	if not is_phone:
-		var cph := _card(content)
-		var lt := Label.new()
-		lt.text = "Téléphones à l'écoute"
-		lt.add_theme_color_override("font_color", C_DIM)
-		cph.add_child(lt)
-		phones_box = VBoxContainer.new()
-		phones_box.add_theme_constant_override("separation", 8)
-		cph.add_child(phones_box)
-		disc_btn = Button.new()
-		disc_btn.text = "Déconnecter"
-		disc_btn.visible = false
-		disc_btn.pressed.connect(func():
-			chosen = ""
-			last_name = ""
-			user_disc = true
-			_save_pref()
-			_pc_unlink())
-		cph.add_child(disc_btn)
-		var seg := Seg.new()
-		seg.setup(["auto", "usb", "wifi"], [0, 2, 1], link_mode)
-		seg.picked.connect(func(id: int):
-			link_mode = id
-			_save_pref())
-		content.add_child(seg)
+	_build_pairing()
 	content = main_content
 	var chat_root := VBoxContainer.new()
 	chat_root.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -913,6 +897,8 @@ func _build_ui() -> void:
 	pv.add_child(pcl)
 	add_child(pop_layer)
 	add_child(settings_layer)
+	move_child(pair_layer, get_child_count() - 1)  # le menu Pairing passe au-dessus de tout
+	move_child(settings_layer, get_child_count() - 1)
 	_fit_width()
 
 
@@ -936,6 +922,8 @@ func _ui_tick(delta: float) -> void:
 		if tap_pending > 0.35:
 			tap_pending = -1.0
 			_media(1)
+	if pair_layer != null and pair_layer.visible:
+		_refresh_pair_btn()
 	if press_t >= 0.0:
 		press_t += delta
 		if press_t > 0.6:
@@ -959,13 +947,13 @@ func _ui_tick(delta: float) -> void:
 	orb.color = orb.color.lerp(col, minf(1.0, delta * 8.0))
 	if state == ST_LINKED and peer != null:
 		var tr := "USB" if peer.get_connected_host() == "127.0.0.1" else "Wi-Fi"
-		chip.text = tr + (" · %d ms" % rtt_ms if rtt_ms >= 0 else "")
+		chip.text = "● Pairing · " + tr + (" · %d ms" % rtt_ms if rtt_ms >= 0 else "")
 		chip.add_theme_color_override("font_color", C_OK)
 		chip_sb.bg_color = Color(C_OK, 0.14)
 	else:
-		chip.text = "Hors ligne"
-		chip.add_theme_color_override("font_color", C_DIM)
-		chip_sb.bg_color = Color(1, 1, 1, 0.06)
+		chip.text = "Pairing"
+		chip.add_theme_color_override("font_color", C_TEXT)
+		chip_sb.bg_color = Color(1, 1, 1, 0.09)
 
 
 func _on_sound(on: bool) -> void:
@@ -1377,6 +1365,143 @@ func _adb_prepare() -> void:
 	_adb(["shell", "monkey", "-p", PKG, "-c", "android.intent.category.LAUNCHER", "1"])
 
 
+## Menu « Pairing » : code PIN, appareils à proximité, grand bouton de confirmation.
+func _build_pairing() -> void:
+	pair_layer = Control.new()
+	pair_layer.set_anchors_preset(Control.PRESET_FULL_RECT)
+	pair_layer.visible = false
+	var dim := ColorRect.new()
+	dim.color = Color(0.03, 0.04, 0.06, 0.94)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	dim.gui_input.connect(func(e: InputEvent):
+		if e is InputEventMouseButton and e.pressed:
+			pair_layer.visible = false)
+	pair_layer.add_child(dim)
+	var sc := ScrollContainer.new()
+	sc.set_anchors_preset(Control.PRESET_FULL_RECT)
+	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	sc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	pair_layer.add_child(sc)
+	var sm := MarginContainer.new()
+	sm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sm.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	for side in ["top", "bottom", "left", "right"]:
+		sm.add_theme_constant_override("margin_" + side, 22)
+	sc.add_child(sm)
+	var cen := CenterContainer.new()
+	cen.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	sm.add_child(cen)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 14)
+	col.custom_minimum_size = Vector2(clampf(get_viewport_rect().size.x - 44.0, 280.0, 480.0), 0)
+	cen.add_child(col)
+	var th := HBoxContainer.new()
+	col.add_child(th)
+	var tl := _label("Pairing", 26, C_TEXT, th)
+	tl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var xb := Button.new()
+	xb.text = "Fermer"
+	xb.custom_minimum_size = Vector2(0, 44)
+	xb.pressed.connect(func(): pair_layer.visible = false)
+	th.add_child(xb)
+	pair_info = _label("", 15, C_DIM, col)
+	pair_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	if is_phone:
+		var cp := _card(col)
+		_label("Code du PC", 16, C_DIM, cp)
+		var le := LineEdit.new()
+		le.placeholder_text = "vide = tout PC accepté"
+		le.max_length = 8
+		le.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_NUMBER
+		le.text = phone_pin
+		le.add_theme_font_size_override("font_size", 30)
+		le.text_changed.connect(func(t: String):
+			phone_pin = t.strip_edges()
+			_save_pref())
+		cp.add_child(le)
+		var hp := _label("Saisis le code PIN affiché dans le menu Pairing du PC.", 13, C_DIM, cp)
+		hp.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	else:
+		var cpin := _card(col)
+		var hpin := HBoxContainer.new()
+		hpin.add_theme_constant_override("separation", 12)
+		cpin.add_child(hpin)
+		var lk := _label("Code PIN", 16, C_DIM, hpin)
+		lk.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		pin_lbl = _label(pin, 40, C_TEXT, hpin)
+		var nb := Button.new()
+		nb.text = "Nouveau"
+		nb.custom_minimum_size = Vector2(0, 44)
+		nb.pressed.connect(_new_pin)
+		hpin.add_child(nb)
+		var hh := _label("À saisir dans l'app du téléphone. Il ne change que si tu le demandes.", 13, C_DIM, cpin)
+		hh.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		var cph := _card(col)
+		_label("Appareils à proximité", 16, C_DIM, cph)
+		phones_box = VBoxContainer.new()
+		phones_box.add_theme_constant_override("separation", 8)
+		cph.add_child(phones_box)
+		var seg := Seg.new()
+		seg.setup(["auto", "usb", "wifi"], [0, 2, 1], link_mode)
+		seg.picked.connect(func(id: int):
+			link_mode = id
+			_save_pref())
+		col.add_child(seg)
+	pair_btn = Button.new()
+	pair_btn.custom_minimum_size = Vector2(0, 78)
+	pair_btn.add_theme_font_size_override("font_size", 24)
+	pair_btn.pressed.connect(_on_pair_confirm)
+	col.add_child(pair_btn)
+	add_child(pair_layer)
+	_refresh_pair_btn()
+
+
+func _refresh_pair_btn() -> void:
+	if pair_btn == null:
+		return
+	if linked:
+		pair_btn.text = "Déconnecter"
+		pair_btn.disabled = false
+		pair_btn.modulate = Color(1.0, 0.55, 0.5)
+		pair_info.text = "Connecté à " + (peer_name if peer_name != "" else "l'appareil") + "."
+	elif is_phone:
+		pair_btn.text = "OK"
+		pair_btn.disabled = false
+		pair_btn.modulate = Color.WHITE
+		pair_info.text = "En attente du PC : lance Pocket Speaker dessus (même Wi-Fi ou USB)."
+	else:
+		pair_btn.text = "Confirmer le pairing"
+		pair_btn.disabled = sel_key == ""
+		pair_btn.modulate = Color(0.5, 1.0, 0.75)
+		pair_info.text = "Choisis un appareil dans la liste, puis confirme." if sel_key == "" else "Prêt : confirme pour te connecter."
+
+
+func _on_pair_confirm() -> void:
+	if linked:
+		chosen = ""
+		last_name = ""
+		user_disc = true
+		sel_key = ""
+		_save_pref()
+		if is_phone:
+			if peer != null:
+				peer.disconnect_from_host()
+		else:
+			_pc_unlink()
+	elif is_phone:
+		pair_layer.visible = false
+	elif sel_key != "":
+		if peer != null:
+			_pc_unlink()
+		chosen = sel_key
+		user_disc = false
+		last_name = sel_name
+		_save_pref()
+		pair_layer.visible = false
+	phones_sig = ""
+	_refresh_pair_btn()
+
+
 func _pc_scan() -> void:
 	var now := Time.get_ticks_msec()
 	while lan.get_available_packet_count() > 0:
@@ -1403,13 +1528,13 @@ func _pc_scan() -> void:
 			found = found or d["key"] == chosen
 		if not found:  # le téléphone connecté n'émet plus de balise : on le garde dans la liste
 			list.append({"key": chosen, "name": (peer_name if peer_name != "" else "Téléphone") + " · connecté"})
-	var sig := chosen + "|" + str(linked)
+	if sel_key == "" and chosen != "":
+		sel_key = chosen
+	var sig := chosen + "|" + sel_key + "|" + str(linked)
 	for d in list:
 		sig += "|" + d["key"] + d["name"]
 	if test_mode and chosen == "" and not list.is_empty():
 		chosen = list[0]["key"]
-	if chosen == "" and not user_disc and not list.is_empty() and last_name == "":
-		chosen = list[0]["key"]  # un seul clic en moins : on se connecte au premier téléphone proposé
 	if chosen == "" and not user_disc and last_name != "":
 		for d in list:
 			if d["name"].begins_with(last_name):
@@ -1427,22 +1552,17 @@ func _pc_scan() -> void:
 			phones_box.add_child(e)
 		for d in list:
 			var b := Button.new()
-			b.text = ("● " if d["key"] == chosen else "") + d["name"]
-			b.custom_minimum_size = Vector2(0, 46)
+			b.text = ("● " if d["key"] == sel_key else "") + d["name"]
+			b.custom_minimum_size = Vector2(0, 50)
 			var key: String = d["key"]
 			var nm2: String = d["name"]
 			b.pressed.connect(func():
-				if key == chosen:
-					return
-				if linked or peer != null:
-					_pc_unlink()
-				chosen = key
-				user_disc = false
-				last_name = nm2.split(" · ")[0]
-				_save_pref())
+				sel_key = key
+				sel_name = nm2.split(" · ")[0]
+				phones_sig = ""
+				_refresh_pair_btn())
 			phones_box.add_child(b)
-	if disc_btn != null:
-		disc_btn.visible = chosen != ""
+	_refresh_pair_btn()
 
 
 func _pc_process(delta: float) -> void:
@@ -1738,6 +1858,8 @@ func _pc_pump_subs() -> void:
 
 func _demo() -> void:
 	want_subs = true
+	if OS.get_environment("POCKET_PAIR") == "1":
+		pair_layer.visible = true
 	for i in 4:
 		_bubble("\u0007%d\u001f%s" % [i + 1, ["Bonjour tout le monde, bienvenue.", "Ceci est une phrase pour bien lire le texte.", "Les mots arrivent les uns à la suite des autres.", "Chaque phrase termin\u00e9e reste affichée au-dessus."][i]])
 	_bubble("\u0006les mots en cours de parole")
