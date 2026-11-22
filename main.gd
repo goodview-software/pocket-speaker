@@ -268,6 +268,11 @@ var subs_sc: ScrollContainer
 var subs_rows: VBoxContainer
 var sub_delay := 0.0  # secondes de décalage du son (pour avoir le temps de lire)
 var delay_q: Array = []
+var sub_sched: Array = []  # groupes de mots en attente : [heure d'affichage ms, texte]
+var subs_t0 := 0  # heure (ms) du premier octet envoyé à Whisper
+var subs_bytes := 0
+var sub_last := 0
+var sub_lag := 0.0  # retard moyen du texte par rapport à la parole (s)
 var delay_slider: HSlider
 var delay_lbl: Label
 var ai_hist: Array = []
@@ -892,6 +897,8 @@ func _on_mic(on: bool) -> void:
 
 func _delay_text() -> void:
 	delay_lbl.text = "Décalage du son : " + ("aucun" if sub_delay < 0.05 else "%.1f s" % sub_delay)
+	if sub_lag > 0.0 and want_subs:
+		delay_lbl.text += "  (texte prêt ~%.1f s après la parole : règle au moins ça)" % sub_lag
 
 
 func _on_subs(on: bool) -> void:
@@ -1485,6 +1492,9 @@ func _pc_pump_capture() -> void:
 			p = maxi(p, absi(b.decode_s16(i)))
 		lvl_out = maxf(lvl_out, p / 32768.0)
 		if subs_io != null and subs_ready:
+			if subs_bytes == 0:
+				subs_t0 = Time.get_ticks_msec()
+			subs_bytes += b.size()
 			subs_io.store_buffer(b)
 		if want_sound:
 			if sub_delay < 0.05 or not want_subs:
@@ -1583,6 +1593,8 @@ func _pc_subs_stop() -> void:
 		th_subs = null
 	subs_io = null
 	subs_ready = false
+	subs_bytes = 0
+	sub_sched.clear()
 	mtx.lock()
 	subs_out.clear()
 	mtx.unlock()
@@ -1604,22 +1616,30 @@ func _subs_loop() -> void:
 		mtx.unlock()
 
 
-## Envoie au téléphone les phrases que Whisper vient de comprendre.
+## Planifie chaque groupe de mots à l'heure où il est prononcé (son décalé), sans les lâcher d'un seul coup.
 func _pc_pump_subs() -> void:
-	if subs_out.is_empty():
-		return
-	mtx.lock()
-	var q := subs_out
-	subs_out = []
-	mtx.unlock()
-	for t: String in q:
+	var now := Time.get_ticks_msec()
+	if not subs_out.is_empty():
+		mtx.lock()
+		var q := subs_out
+		subs_out = []
+		mtx.unlock()
+		for line: String in q:
+			var k := line.find("\u0003")
+			var due := now
+			if k > 0:
+				var st := line.substr(0, k).to_float()
+				var spoken := subs_t0 + int(st * 1000.0)
+				sub_lag = lerpf(sub_lag, (now - spoken) / 1000.0, 0.3) if sub_lag > 0.0 else (now - spoken) / 1000.0
+				due = spoken + int(sub_delay * 1000.0) - 250
+				line = line.substr(k + 1)
+			sub_sched.append([due, line])
+		_delay_text()
+	while not sub_sched.is_empty() and int(sub_sched[0][0]) <= now and now - sub_last >= 250:
+		sub_last = now
+		var t: String = sub_sched.pop_front()[1]
 		_send(T_TEXT, t.to_utf8_buffer().slice(0, 1000))
 		_bubble(t)
-		subs_lines.append(t)
-		while subs_lines.size() > 4:
-			subs_lines.pop_front()
-		if subs_lbl != null:
-			subs_lbl.text = "\n".join(subs_lines)
 
 
 func _bubble(text: String) -> void:
