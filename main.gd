@@ -826,8 +826,8 @@ func _build_ui() -> void:
 	subs_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	subs_rows.add_theme_constant_override("separation", 6)
 	subs_sc.add_child(subs_rows)
-	var live_box := PixBox.new(Color(0.07, 0.15, 0.13), Color(C_OK, 0.95), 10)
-	live_box.custom_minimum_size = Vector2(0, 92 if is_phone else 84)  # taille fixe : ne se déforme jamais
+	var live_box := PixBox.new(Color(0.03, 0.04, 0.06), Color(C_OK, 1.0), 12)
+	live_box.custom_minimum_size = Vector2(0, 112 if is_phone else 100)  # taille fixe : ne se déforme jamais
 	live_box.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
 	live_box.clip_contents = true
 	live_lbl = Label.new()
@@ -835,8 +835,9 @@ func _build_ui() -> void:
 	live_lbl.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
 	live_lbl.clip_text = true
 	live_lbl.add_theme_font_override("font", INTER)
-	live_lbl.add_theme_font_size_override("font_size", 22 if is_phone else 19)
-	live_lbl.add_theme_color_override("font_color", C_OK)
+	live_lbl.add_theme_font_size_override("font_size", 26 if is_phone else 23)
+	live_lbl.add_theme_color_override("font_color", Color.WHITE)
+	live_lbl.add_theme_constant_override("line_spacing", 6)
 	live_lbl.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	live_box.add_child(live_lbl)
 	chat_root.add_child(live_box)
@@ -1737,7 +1738,7 @@ func _pc_pump_subs() -> void:
 
 func _set_live(t: String) -> void:
 	if live_lbl != null:
-		live_lbl.text = t if t.length() <= 130 else "…" + t.substr(t.length() - 128)  # on garde la fin, la boîte reste fixe
+		live_lbl.text = t if t.length() <= 84 else "…" + t.substr(t.length() - 82)  # on garde la fin, la boîte reste fixe
 
 
 func _bubble(text: String) -> void:
@@ -1757,7 +1758,7 @@ func _bubble(text: String) -> void:
 func _add_block(id: int, orig: String) -> void:
 	if subs_rows == null:
 		return
-	var pc := PixBox.new(Color(0.09, 0.11, 0.14), Color(C_OK, 0.55), 12)
+	var pc := PixBox.new(Color(0.04, 0.05, 0.07), Color(0.42, 0.5, 0.52), 14)
 	pc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 4)
@@ -1765,14 +1766,17 @@ func _add_block(id: int, orig: String) -> void:
 	var tm := Label.new()
 	tm.text = Time.get_time_string_from_system()
 	tm.add_theme_font_size_override("font_size", 12)
-	tm.add_theme_color_override("font_color", C_DIM)
+	tm.add_theme_color_override("font_color", Color("9aa5b1"))
 	v.add_child(tm)
-	var fs := 21 if is_phone else 19
+	var fs := 26 if is_phone else 23
 	var lw := []
-	v.add_child(_sub_label(_linkify(orig, "#e8ecf1", lw), orig, fs, lw))
+	v.add_child(_sub_label(_linkify(orig, "#ffffff", lw), orig, fs, lw))
 	var at_end := subs_sc.scroll_vertical >= subs_sc.get_v_scroll_bar().max_value - subs_sc.size.y - 40
 	subs_rows.add_child(pc)
 	blocks[id] = v
+	var nb := subs_rows.get_child_count()
+	for i in nb:
+		subs_rows.get_child(i).modulate = Color(1, 1, 1, 1.0 if i >= nb - 1 else 0.6)
 	while subs_rows.get_child_count() > 200:
 		var old := subs_rows.get_child(0)
 		subs_rows.remove_child(old)
@@ -1787,7 +1791,7 @@ func _set_trans(id: int, t: String) -> void:
 	if not blocks.has(id) or not is_instance_valid(blocks[id]):
 		return
 	var rw := []
-	var l := _sub_label(_linkify(t, "#4de1b4", rw), t, 19 if is_phone else 17, rw)
+	var l := _sub_label(_linkify(t, "#ffd45e", rw), t, 23 if is_phone else 20, rw)
 	blocks[id].add_child(l)
 
 
@@ -1802,6 +1806,7 @@ func _sub_label(bb: String, plain: String, fs: int, words: Array) -> RichTextLab
 	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	l.add_theme_font_override("normal_font", INTER)
 	l.add_theme_font_size_override("normal_font_size", fs)
+	l.add_theme_constant_override("line_separation", 6)
 	l.text = bb
 	l.meta_clicked.connect(func(m: Variant): _explain(str(words[int(str(m))]), plain))
 	return l
