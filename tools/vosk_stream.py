@@ -32,6 +32,24 @@ mdir = os.environ.get("POCKET_VOSK", os.path.expanduser("~/.local/share/pocket-s
 SetLogLevel(-1)
 rec = KaldiRecognizer(Model(mdir), 16000)
 rec.SetWords(True)
+rec.SetPartialWords(True)
+try:  # coupe plus vite sur les silences : des phrases courtes plutôt que des pavés
+    from vosk import EndpointerMode
+    rec.SetEndpointerMode(EndpointerMode.SHORT)
+except Exception:
+    pass
+
+def split_words(words, text):
+    """Découpe un long passage en petites phrases : à chaque pause nette entre deux mots, ou au bout de 12 mots."""
+    out, cur = [], []
+    for i, w in enumerate(words):
+        if cur and (w["start"] - words[i - 1]["end"] >= 0.4 and len(cur) >= 3 or len(cur) >= 12):
+            out.append(" ".join(x["word"] for x in cur))
+            cur = []
+        cur.append(w)
+    if cur:
+        out.append(" ".join(x["word"] for x in cur))
+    return out or ([text] if text else [])
 print("\x01ready", flush=True)
 
 workq = queue.Queue()
@@ -50,6 +68,25 @@ threading.Thread(target=worker, daemon=True).start()
 RATE, STEP = 48000, 3
 inp = sys.stdin.buffer
 last = ""
+committed = 0  # mots du passage en cours déjà envoyés en blocs (les blocs partent pendant qu'on parle)
+
+def block(part):
+    global nblock
+    nblock += 1
+    print("\x07%d\x1f%s" % (nblock, part), flush=True)
+    if target:
+        workq.put((nblock, part))
+
+def cut_index(words, start):
+    """Premier point de coupe après `start` : une pause nette (>= 0,4 s) après 3 mots, ou 12 mots. -1 si pas encore."""
+    for i in range(start + 1, len(words)):
+        n = i - start
+        if n >= 3 and words[i]["start"] - words[i - 1]["end"] >= 0.4:
+            return i
+        if n >= 12:
+            return i + 1
+    return -1
+
 while True:
     raw = inp.read(4 * STEP * 480)  # ~30 ms
     if not raw:
@@ -61,14 +98,23 @@ while True:
         r = _j.loads(rec.Result())
         print("\x06", flush=True)
         last = ""
-        t = r.get("text", "").strip()
+        words = (r.get("result") or [])[committed:]
+        committed = 0
+        t = " ".join(w["word"] for w in words) if words else (r.get("text", "").strip() if not r.get("result") else "")
         if t and not BAD.search(t):
-            nblock += 1
-            print("\x07%d\x1f%s" % (nblock, t), flush=True)  # bloc de phrase, tout de suite
-            if target:
-                workq.put((nblock, t))
+            for part in split_words(words, t):
+                block(part)
     else:
-        p = _j.loads(rec.PartialResult()).get("partial", "")
+        pj = _j.loads(rec.PartialResult())
+        pw = pj.get("partial_result") or []
+        c = cut_index(pw, committed)
+        while c != -1:  # assez de mots : on envoie une petite phrase sans attendre la fin
+            part = " ".join(w["word"] for w in pw[committed:c])
+            if part and not BAD.search(part):
+                block(part)
+            committed = c
+            c = cut_index(pw, committed)
+        p = " ".join(w["word"] for w in pw[committed:]) if pw else pj.get("partial", "")
         if p != last:
             last = p
             print("\x06" + p, flush=True)

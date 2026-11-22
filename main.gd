@@ -299,6 +299,7 @@ var blocks := {}  # id de bloc -> VBox
 var live_box: Control
 var land := false  # paysage : salle de classe, conférence en diaporama (lesson.gd)
 var lesson: Control
+var hint_n: Label
 var chat_root_n: VBoxContainer
 var margin_n: Control
 var vbox_rows: VBoxContainer
@@ -315,6 +316,7 @@ var sub_lag := 0.0  # retard moyen du texte par rapport à la parole (s)
 var ai_hist: Array = []
 const INTER := preload("res://kit/fonts/Inter-500.woff2")
 const PERSONA := "Tu es Goody, la mascotte de Pocket Speaker : un assistant généraliste, chaleureux et clair. Réponds court (2-4 phrases), dans la langue de l'utilisateur, sans markdown."
+var img_on := true  # photos Wikipédia (envoie seulement les noms cités)
 var src_i := 0  # langue parlée (Vosk) : 0 fr · 1 en · 2 es
 var sub_target := 0  # langue de traduction (index dans LANGS, 0 = aucune)
 var subs_target_run := -1
@@ -479,6 +481,7 @@ func _load_pref() -> void:
 		want_subs = bool(cf.get_value("audio", "subs", false))
 		sub_target = int(cf.get_value("audio", "target", 0))
 		src_i = clampi(int(cf.get_value("audio", "src", 0)), 0, 2)
+		img_on = bool(cf.get_value("audio", "imgs", true))
 	if pin == "":
 		_new_pin()
 
@@ -500,6 +503,7 @@ func _save_pref() -> void:
 	cf.set_value("audio", "subs", want_subs)
 	cf.set_value("audio", "target", sub_target)
 	cf.set_value("audio", "src", src_i)
+	cf.set_value("audio", "imgs", img_on)
 	cf.set_value("audio", "delay", sub_delay)
 	cf.save("user://pref.cfg")
 
@@ -673,9 +677,9 @@ func _build_ui() -> void:
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	sub.custom_minimum_size = Vector2(0, 40)
-	var hint_l := _label("Personnage : appui = pause · double appui = reculer 5 s · appui long = paramètres", 13, C_IDLE, content)
-	hint_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	hint_l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint_n = _label("Personnage : appui = pause · double appui = reculer 5 s · appui long = paramètres", 13, C_IDLE, content)
+	hint_n.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint_n.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 
 	# Paramètres : fenêtre ouverte par un appui long sur le personnage.
 	var main_content := content
@@ -825,9 +829,26 @@ func _build_ui() -> void:
 		opt_src.select(src_i)
 		opt_src.item_selected.connect(func(i: int):
 			src_i = i
+			lesson.lang = ["fr", "en", "es"][i]
 			_save_pref()
 			_pc_subs_sync())
 		r4b.add_child(opt_src)
+		var r4c := HBoxContainer.new()
+		r4c.add_theme_constant_override("separation", 14)
+		c4.add_child(r4c)
+		var l4c := _label("Images depuis internet (Wikipédia)", 16, C_TEXT, r4c)
+		l4c.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var tg_img := Toggle.new()
+		tg_img.set_on(img_on)
+		tg_img.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		tg_img.toggled.connect(func(on: bool):
+			img_on = on
+			lesson.images_on = on
+			lesson._update_mini()
+			_save_pref())
+		r4c.add_child(tg_img)
+		var h4c := _label("Cherche la photo des personnes et lieux cités. Seuls les noms sont envoyés à Wikipédia.", 13, C_DIM, c4)
+		h4c.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 
 	if not is_phone:
 		var cph := _card(content)
@@ -886,10 +907,15 @@ func _build_ui() -> void:
 	vbox_rows = subs_rows
 	lesson = LessonScript.new()
 	lesson.master = not is_phone
+	lesson.images_on = img_on
+	lesson.lang = ["fr", "en", "es"][src_i]
 	lesson.make_label = func(t: String, col: String, fs: int) -> Control:
 		var lw := []
 		return _sub_label(_linkify(t, col, lw), t, fs, lw)
 	lesson.slide_changed.connect(_on_slide)
+	lesson.keyword_changed.connect(func(id: int, kw: String):
+		if not is_phone and linked:
+			_send(T_TEXT, ("\u000c%d\u001f%s" % [id, kw]).to_utf8_buffer()))
 	lesson.graph_changed.connect(func(sid: int, payload: String):
 		if not is_phone and linked:
 			_send(T_TEXT, ("\u000b%d\u001f%s" % [sid, payload]).to_utf8_buffer().slice(0, 3000)))
@@ -1825,12 +1851,18 @@ func _clear_subs() -> void:
 
 func _set_live(t: String) -> void:
 	if live_lbl != null:
+		if lesson != null:
+			lesson.note_text(t)
 		live_lbl.text = t if t.length() <= 84 else "…" + t.substr(t.length() - 82)  # on garde la fin, la boîte reste fixe
 
 
 func _bubble(text: String) -> void:
 	if text.begins_with("\u0006"):
 		_set_live(text.substr(1))
+	elif text.begins_with("\u000c"):
+		var kc := text.find("\u001f")
+		if kc > 1:
+			lesson.apply_keyword(text.substr(1, kc - 1).to_int(), text.substr(kc + 1))
 	elif text.begins_with("\u000b"):
 		var kk := text.find("\u001f")
 		if kk > 1:
@@ -1915,6 +1947,9 @@ func _set_land(on: bool) -> void:
 	land = on
 	lesson.visible = on
 	subs_sc.visible = not on
+	status.visible = not on  # en paysage : la place sert au décor de la classe
+	sub.visible = not on
+	hint_n.visible = not on
 	if on:
 		chat_root_n.anchor_right = 0.34
 		chat_root_n.anchor_top = 0.62
