@@ -30,6 +30,37 @@ print("\x01ready", flush=True)
 RATE, STEP = 48000, 3          # 48 kHz -> 16 kHz
 WIN = 1600                     # fenêtres d'énergie de 100 ms (à 16 kHz)
 MAX_S, MIN_S, SIL_S = 8.0, 0.8, 0.45
+def chunks(t, n=5):
+    """Découpe une phrase en groupes de 2 à n mots (sur la ponctuation, puis par taille)."""
+    parts = [p.strip() for p in re.findall(r"[^,;:.!?…]+[,;:.!?…]*", t) if p.strip()]
+    out = []
+    for p in parts:
+        w = p.split()
+        k = -(-len(w) // n)
+        per = -(-len(w) // k)
+        out += [" ".join(w[i:i + per]) for i in range(0, len(w), per)]
+    merged = []
+    for c in out:  # un groupe d'un seul mot rejoint le précédent
+        if merged and len(c.split()) == 1 and len(merged[-1].split()) < n + 1:
+            merged[-1] += " " + c
+        else:
+            merged.append(c)
+    return merged or [t]
+
+def translate_chunks(full, chs):
+    if len(chs) == 1:
+        return [translate(chs[0])]
+    body = {"model": TMODEL, "stream": False, "keep_alive": "30m", "options": {"num_predict": 300, "temperature": 0},
+            "prompt": "Traduis en %s ce texte découpé en segments séparés par ' || '. Garde exactement le même découpage (même nombre de segments, séparés par ' || '). Réponds uniquement par la traduction.\n\n%s" % (NAMES.get(target, target), " || ".join(chs))}
+    try:
+        rq = urllib.request.Request(OLLAMA + "/api/generate", json.dumps(body).encode(), {"Content-Type": "application/json"})
+        parts = [x.strip() for x in json.load(urllib.request.urlopen(rq, timeout=30))["response"].split("||")]
+        if len(parts) == len(chs) and all(parts):
+            return parts
+    except Exception:
+        pass
+    return [translate(c) for c in chs]
+
 BAD = re.compile(r"(sous-?titr|amara|merci d'avoir regard|thanks for watching|subscribe|abonne)", re.I)
 unit = 4 * STEP * WIN  # octets par pas de 100 ms
 inp = sys.stdin.buffer
@@ -59,8 +90,10 @@ def flush(a):
     for s in r["segments"]:
         t = s["text"].strip()
         if t and s["no_speech_prob"] < 0.6 and not BAD.search(t):
-            tr = translate(t) if target else None
-            print(t + ("\x02" + tr.replace("\n", " ") if tr else ""), flush=True)
+            chs = chunks(t)
+            trs = translate_chunks(t, chs) if target else [None] * len(chs)
+            for c, tr in zip(chs, trs):
+                print(c + ("\x02" + tr.replace("\n", " ") if tr else ""), flush=True)
 
 threading.Thread(target=reader, daemon=True).start()
 while True:

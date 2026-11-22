@@ -264,6 +264,12 @@ var press_t := -1.0
 var subs_card: Control
 var chat_sc: ScrollContainer
 var chat_in: LineEdit
+var subs_sc: ScrollContainer
+var subs_rows: VBoxContainer
+var sub_delay := 0.0  # secondes de décalage du son (pour avoir le temps de lire)
+var delay_q: Array = []
+var delay_slider: HSlider
+var delay_lbl: Label
 var ai_hist: Array = []
 const INTER := preload("res://kit/fonts/Inter-500.woff2")
 const PERSONA := "Tu es Goody, la mascotte de Pocket Speaker : un assistant généraliste, chaleureux et clair. Réponds court (2-4 phrases), dans la langue de l'utilisateur, sans markdown."
@@ -421,6 +427,7 @@ func _load_pref() -> void:
 		last_name = str(cf.get_value("net", "last", ""))
 		want_subs = bool(cf.get_value("audio", "subs", false))
 		sub_target = int(cf.get_value("audio", "target", 0))
+		sub_delay = float(cf.get_value("audio", "delay", 0.0))
 	if pin == "":
 		_new_pin()
 
@@ -441,6 +448,7 @@ func _save_pref() -> void:
 	cf.set_value("net", "last", last_name)
 	cf.set_value("audio", "subs", want_subs)
 	cf.set_value("audio", "target", sub_target)
+	cf.set_value("audio", "delay", sub_delay)
 	cf.save("user://pref.cfg")
 
 
@@ -722,6 +730,24 @@ func _build_ui() -> void:
 		_send_ctrl())
 	r4.add_child(opt_lang)
 
+	var c5 := _card(content)
+	delay_lbl = _label("", 16, C_TEXT, c5)
+	delay_slider = HSlider.new()
+	delay_slider.min_value = 0.0
+	delay_slider.max_value = 8.0
+	delay_slider.step = 0.5
+	delay_slider.value = sub_delay
+	delay_slider.custom_minimum_size = Vector2(0, 30)
+	delay_slider.value_changed.connect(func(v: float):
+		sub_delay = v
+		_delay_text()
+		_save_pref()
+		_send_ctrl())
+	c5.add_child(delay_slider)
+	var d5 := _label("Retarde le son envoyé au téléphone pour laisser le texte arriver avant. Décale aussi le son par rapport à l'image du PC.", 13, C_DIM, c5)
+	d5.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_delay_text()
+
 	if not is_phone:
 		var cph := _card(content)
 		var lt := Label.new()
@@ -756,6 +782,15 @@ func _build_ui() -> void:
 	chat_root.offset_bottom = -14
 	chat_root.add_theme_constant_override("separation", 8)
 	add_child(chat_root)
+	subs_sc = ScrollContainer.new()
+	subs_sc.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	subs_sc.size_flags_stretch_ratio = 2.0
+	subs_sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	chat_root.add_child(subs_sc)
+	subs_rows = VBoxContainer.new()
+	subs_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	subs_rows.add_theme_constant_override("separation", 6)
+	subs_sc.add_child(subs_rows)
 	chat_sc = ScrollContainer.new()
 	chat_sc.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	chat_sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -855,6 +890,10 @@ func _on_mic(on: bool) -> void:
 	_send_ctrl()
 
 
+func _delay_text() -> void:
+	delay_lbl.text = "Décalage du son : " + ("aucun" if sub_delay < 0.05 else "%.1f s" % sub_delay)
+
+
 func _on_subs(on: bool) -> void:
 	want_subs = on
 	if subs_card != null:
@@ -895,7 +934,7 @@ func _send(t: int, data: PackedByteArray) -> void:
 
 func _send_ctrl() -> void:
 	if linked:
-		_send(T_CTRL, PackedByteArray([1 if want_sound else 0, 1 if want_mic else 0, int(vol * 100.0), 1 if want_subs else 0, sub_target]))
+		_send(T_CTRL, PackedByteArray([1 if want_sound else 0, 1 if want_mic else 0, int(vol * 100.0), 1 if want_subs else 0, sub_target, int(sub_delay * 2.0)]))
 
 
 ## Lit les trames reçues ; retourne false si la connexion est perdue.
@@ -935,6 +974,10 @@ func _on_frame(t: int, pl: PackedByteArray) -> void:
 					if pl.size() >= 5:
 						sub_target = clampi(pl[4], 0, LANGS.size() - 1)
 						opt_lang.select(sub_target)
+					if pl.size() >= 6:
+						sub_delay = pl[5] / 2.0
+						delay_slider.set_value_no_signal(sub_delay)
+						_delay_text()
 					if not is_phone:
 						_pc_subs_sync()
 				_apply_ctrl_ui()
@@ -1444,7 +1487,16 @@ func _pc_pump_capture() -> void:
 		if subs_io != null and subs_ready:
 			subs_io.store_buffer(b)
 		if want_sound:
-			_send(T_AUDIO, b)
+			if sub_delay < 0.05 or not want_subs:
+				_send(T_AUDIO, b)
+			else:
+				delay_q.append([Time.get_ticks_msec(), b])
+	var now := Time.get_ticks_msec()
+	var lim := sub_delay * 1000.0 if want_subs else 0.0
+	while not delay_q.is_empty() and (now - int(delay_q[0][0]) >= lim or not want_sound):
+		var it: Array = delay_q.pop_front()
+		if want_sound:
+			_send(T_AUDIO, it[1])
 
 
 func _pc_mic(pl: PackedByteArray) -> void:
@@ -1574,10 +1626,64 @@ func _bubble(text: String) -> void:
 	if text.strip_edges() == "":
 		return
 	var parts := text.split("\u0002")
-	if parts.size() > 1:  # traduction : l'original est barré, la traduction est lisible et cliquable
-		_add_msg("sub", "[color=#8892a0][s]" + parts[0].replace("[", "[lb]") + "[/s][/color] [color=#ffb454][b]⟶[/b][/color] " + _linkify(parts[1], "#4de1b4"), parts[1])
-	else:
-		_add_msg("sub", _linkify(parts[0], "#e8ecf1"), parts[0])
+	_add_sub(parts[0], parts[1] if parts.size() > 1 else "")
+
+
+## Groupe de mots : original à gauche, traduction à droite ; les nouveaux arrivent en haut et font descendre les anciens.
+func _add_sub(orig: String, trans: String) -> void:
+	if subs_rows == null:
+		return
+	var clip := Control.new()
+	clip.clip_contents = true
+	clip.mouse_filter = Control.MOUSE_FILTER_PASS
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+	row.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	clip.add_child(row)
+	var fs := 21 if is_phone else 19
+	var left := _sub_label(_linkify(orig, "#e8ecf1"), orig, fs)
+	row.add_child(left)
+	if trans != "":
+		var ar := Label.new()
+		ar.text = "⟶"
+		ar.add_theme_color_override("font_color", C_WAIT)
+		ar.add_theme_font_size_override("font_size", fs)
+		ar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(ar)
+		row.add_child(_sub_label(_linkify(trans, "#4de1b4"), trans, fs))
+	subs_rows.add_child(clip)
+	subs_rows.move_child(clip, 0)
+	clip.custom_minimum_size.y = 0.0
+	await get_tree().process_frame
+	if not is_instance_valid(clip):
+		return
+	var h := row.get_combined_minimum_size().y + 6.0
+	var tw := clip.create_tween()
+	tw.tween_property(clip, "custom_minimum_size:y", h, 0.35).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	var n := subs_rows.get_child_count()
+	for i in n:
+		subs_rows.get_child(i).modulate.a = 1.0 if i == 0 else maxf(0.3, 0.8 - 0.12 * i)
+	while subs_rows.get_child_count() > 80:
+		var old := subs_rows.get_child(subs_rows.get_child_count() - 1)
+		subs_rows.remove_child(old)
+		old.queue_free()
+	subs_sc.scroll_vertical = 0
+
+
+func _sub_label(bb: String, plain: String, fs: int) -> RichTextLabel:
+	var l := RichTextLabel.new()
+	l.bbcode_enabled = true
+	l.fit_content = true
+	l.scroll_active = false
+	l.meta_underlined = false
+	l.custom_minimum_size.x = 60
+	l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	l.add_theme_font_override("normal_font", INTER)
+	l.add_theme_font_size_override("normal_font_size", fs)
+	l.text = bb
+	l.meta_clicked.connect(func(m: Variant): _explain(str(m), plain))
+	return l
 
 
 ## Chaque mot devient cliquable (explication par la mascotte).
