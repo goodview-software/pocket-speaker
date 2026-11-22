@@ -296,9 +296,16 @@ var lvl_mic := 0.0
 var rtt_ms := -1
 var link_mode := 0  # 0 auto · 1 Wi-Fi · 2 USB
 var peer_name := ""
-var pin := ""  # PC : code affiché, ne change que sur demande
-var phone_pin := ""  # téléphone : code saisi (vide = accepte tout PC)
-var authed := false
+var authed := false  # téléphone : le PC connecté a été accepté (popup, appareil de confiance ou demande faite ici)
+var trusted: Array = []  # téléphone : noms des PC déjà acceptés (plus de popup ensuite)
+var pcs := {}  # téléphone : PC à proximité {ip: {name, t}}
+var req_until := 0  # téléphone : on attend la connexion du PC jusqu'à cette heure (ms)
+var ask_layer: Control
+var ask_lbl: Label
+var ask_yes: Button
+var ask_no: Button
+var pc_beacon_t := 0.0
+var req_peer := PacketPeerUDP.new()
 var phones := {}  # PC : téléphones qui écoutent {clé: {name, ip, t}}
 var chosen := ""  # PC : clé du téléphone choisi ("usb" ou ip)
 var last_name := ""
@@ -306,7 +313,6 @@ var user_disc := false
 var deny_t := -100000
 var phones_box: VBoxContainer
 var phones_sig := ""
-var pin_lbl: Label
 var mic_rate := 48000
 var linked_t := 0.0
 var mascot := 0  # variante de Goody choisie dans le Goodview Launcher (profil partagé)
@@ -447,29 +453,18 @@ func _load_pref() -> void:
 	if cf.load("user://pref.cfg") == OK:
 		link_mode = int(cf.get_value("net", "mode", 0))
 		vol = float(cf.get_value("audio", "vol", 1.0))
-		pin = str(cf.get_value("net", "pin", ""))
-		phone_pin = str(cf.get_value("net", "phone_pin", ""))
+		trusted = cf.get_value("net", "trusted", [])
 		last_name = str(cf.get_value("net", "last", ""))
 		want_subs = bool(cf.get_value("audio", "subs", false))
 		sub_target = int(cf.get_value("audio", "target", 0))
 		src_i = clampi(int(cf.get_value("audio", "src", 0)), 0, 2)
-	if pin == "":
-		_new_pin()
-
-
-func _new_pin() -> void:
-	pin = "%04d" % (randi() % 10000)
-	if pin_lbl != null:
-		pin_lbl.text = pin
-	_save_pref()
 
 
 func _save_pref() -> void:
 	var cf := ConfigFile.new()
 	cf.set_value("net", "mode", link_mode)
 	cf.set_value("audio", "vol", vol)
-	cf.set_value("net", "pin", pin)
-	cf.set_value("net", "phone_pin", phone_pin)
+	cf.set_value("net", "trusted", trusted)
 	cf.set_value("net", "last", last_name)
 	cf.set_value("audio", "subs", want_subs)
 	cf.set_value("audio", "target", sub_target)
@@ -1104,16 +1099,21 @@ func _on_frame(t: int, pl: PackedByteArray) -> void:
 			if pl.size() >= 1:
 				mascot = clampi(pl[0], 0, 7)
 				peer_name = pl.slice(1).get_string_from_utf8()
-		T_PIN:
-			if is_phone:
-				if pl.get_string_from_utf8() == phone_pin or phone_pin == "":
-					authed = true
-				else:
-					_send(T_DENY, PackedByteArray())
-					peer.poll()
-					peer.disconnect_from_host()
-					peer = null
-					linked = false
+				if is_phone and not authed:
+					if peer_name in trusted:
+						authed = true
+					else:
+						_ask_pair("« %s » veut se connecter à ce téléphone." % peer_name, func():
+							authed = true
+							if not (peer_name in trusted):
+								trusted.append(peer_name)
+								_save_pref(), func():
+							_send(T_DENY, PackedByteArray())
+							if peer != null:
+								peer.poll()
+								peer.disconnect_from_host()
+							peer = null
+							linked = false)
 		T_DENY:
 			if not is_phone:
 				deny_t = Time.get_ticks_msec()
@@ -1163,6 +1163,7 @@ func _phone_init() -> void:
 	server.listen(PORT)
 	beacon.set_broadcast_enabled(true)
 	beacon.set_dest_address("255.255.255.255", BEACON_PORT)
+	lan.bind(BEACON_PORT)
 	_on_vol(vol * 100.0)
 
 
@@ -1197,7 +1198,7 @@ func _phone_process(delta: float) -> void:
 		peer = np
 		rxbuf.clear()
 		linked = false
-		authed = true
+		authed = np.get_connected_host() == "127.0.0.1" or Time.get_ticks_msec() < req_until  # câble USB, ou demande faite depuis ce téléphone
 	if peer != null:
 		peer.poll()
 		var st := peer.get_status()
@@ -1219,12 +1220,39 @@ func _phone_process(delta: float) -> void:
 			peer = null
 			linked = false
 			rtt_ms = -1
+	_phone_scan()
 	if not linked:
-		_set_status(ST_WAIT, "En attente du PC", "Lance Pocket Speaker sur le PC\n(USB branché ou même Wi-Fi).")
+		if peer != null and not authed:
+			_set_status(ST_WAIT, "Demande de pairing", "Accepte ou refuse la demande.")
+		else:
+			_set_status(ST_WAIT, "En attente du PC", "Ouvre « Pairing » pour choisir un PC,\nou lance Pocket Speaker sur le PC.")
 		beacon_t -= delta
 		if beacon_t <= 0.0:
 			beacon_t = 1.0
 			beacon.put_packet(("POCKET|" + _phone_name()).to_utf8_buffer())
+
+
+## Téléphone : écoute les PC qui annoncent leur présence (« PC|nom »).
+func _phone_scan() -> void:
+	var now := Time.get_ticks_msec()
+	while lan.get_available_packet_count() > 0:
+		var txt := lan.get_packet().get_string_from_utf8()
+		var ip := lan.get_packet_ip()
+		if txt.begins_with("PC|"):
+			pcs[ip] = {"name": txt.substr(3), "t": now}
+	for k in pcs.keys():
+		if now - int(pcs[k]["t"]) > 4000:
+			pcs.erase(k)
+	var list: Array = []
+	for k in pcs:
+		list.append({"key": k, "name": str(pcs[k]["name"]) + " · PC"})
+	var sig := sel_key + "|" + str(linked)
+	for d in list:
+		sig += "|" + d["key"] + d["name"]
+	if sig != phones_sig and phones_box != null:
+		phones_sig = sig
+		_fill_list(list)
+	_refresh_pair_btn()
 
 
 func _play(pl: PackedByteArray) -> void:
@@ -1293,6 +1321,8 @@ func _pc_init() -> void:
 			if id.is_valid_int():
 				_pa(["unload-module", id])
 	lan.bind(BEACON_PORT)
+	beacon.set_broadcast_enabled(true)
+	beacon.set_dest_address("255.255.255.255", BEACON_PORT)
 	th_adb = Thread.new()
 	th_adb.start(_adb_loop)
 
@@ -1406,41 +1436,12 @@ func _build_pairing() -> void:
 	th.add_child(xb)
 	pair_info = _label("", 15, C_DIM, col)
 	pair_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	if is_phone:
-		var cp := _card(col)
-		_label("Code du PC", 16, C_DIM, cp)
-		var le := LineEdit.new()
-		le.placeholder_text = "vide = tout PC accepté"
-		le.max_length = 8
-		le.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_NUMBER
-		le.text = phone_pin
-		le.add_theme_font_size_override("font_size", 30)
-		le.text_changed.connect(func(t: String):
-			phone_pin = t.strip_edges()
-			_save_pref())
-		cp.add_child(le)
-		var hp := _label("Saisis le code PIN affiché dans le menu Pairing du PC.", 13, C_DIM, cp)
-		hp.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	else:
-		var cpin := _card(col)
-		var hpin := HBoxContainer.new()
-		hpin.add_theme_constant_override("separation", 12)
-		cpin.add_child(hpin)
-		var lk := _label("Code PIN", 16, C_DIM, hpin)
-		lk.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		pin_lbl = _label(pin, 40, C_TEXT, hpin)
-		var nb := Button.new()
-		nb.text = "Nouveau"
-		nb.custom_minimum_size = Vector2(0, 44)
-		nb.pressed.connect(_new_pin)
-		hpin.add_child(nb)
-		var hh := _label("À saisir dans l'app du téléphone. Il ne change que si tu le demandes.", 13, C_DIM, cpin)
-		hh.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		var cph := _card(col)
-		_label("Appareils à proximité", 16, C_DIM, cph)
-		phones_box = VBoxContainer.new()
-		phones_box.add_theme_constant_override("separation", 8)
-		cph.add_child(phones_box)
+	var cph := _card(col)
+	_label("Appareils à proximité", 16, C_DIM, cph)
+	phones_box = VBoxContainer.new()
+	phones_box.add_theme_constant_override("separation", 8)
+	cph.add_child(phones_box)
+	if not is_phone:
 		var seg := Seg.new()
 		seg.setup(["auto", "usb", "wifi"], [0, 2, 1], link_mode)
 		seg.picked.connect(func(id: int):
@@ -1464,16 +1465,40 @@ func _refresh_pair_btn() -> void:
 		pair_btn.disabled = false
 		pair_btn.modulate = Color(1.0, 0.55, 0.5)
 		pair_info.text = "Connecté à " + (peer_name if peer_name != "" else "l'appareil") + "."
-	elif is_phone:
-		pair_btn.text = "OK"
-		pair_btn.disabled = false
-		pair_btn.modulate = Color.WHITE
-		pair_info.text = "En attente du PC : lance Pocket Speaker dessus (même Wi-Fi ou USB)."
 	else:
-		pair_btn.text = "Confirmer le pairing"
+		pair_btn.text = "Demander le pairing"
 		pair_btn.disabled = sel_key == ""
 		pair_btn.modulate = Color(0.5, 1.0, 0.75)
-		pair_info.text = "Choisis un appareil dans la liste, puis confirme." if sel_key == "" else "Prêt : confirme pour te connecter."
+		if sel_key == "":
+			pair_info.text = "Choisis un appareil dans la liste."
+		elif is_phone:
+			pair_info.text = "L'autre appareil devra accepter la demande."
+		else:
+			pair_info.text = "Le téléphone devra accepter la demande."
+
+
+## Liste des appareils (téléphones côté PC, PC côté téléphone) : on sélectionne, puis on demande le pairing.
+func _fill_list(list: Array) -> void:
+	for c in phones_box.get_children():
+		c.queue_free()
+	if list.is_empty():
+		var e := Label.new()
+		e.text = "Aucun appareil pour l'instant. Ouvre Pocket Speaker sur l'autre appareil (même Wi-Fi)" + ("" if is_phone else " ou branche le téléphone.")
+		e.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		e.add_theme_color_override("font_color", C_DIM)
+		phones_box.add_child(e)
+	for d in list:
+		var b := Button.new()
+		b.text = ("● " if d["key"] == sel_key else "") + d["name"]
+		b.custom_minimum_size = Vector2(0, 50)
+		var key: String = d["key"]
+		var nm2: String = d["name"]
+		b.pressed.connect(func():
+			sel_key = key
+			sel_name = nm2.split(" · ")[0]
+			phones_sig = ""
+			_refresh_pair_btn())
+		phones_box.add_child(b)
 
 
 func _on_pair_confirm() -> void:
@@ -1488,18 +1513,72 @@ func _on_pair_confirm() -> void:
 				peer.disconnect_from_host()
 		else:
 			_pc_unlink()
-	elif is_phone:
-		pair_layer.visible = false
 	elif sel_key != "":
-		if peer != null:
-			_pc_unlink()
-		chosen = sel_key
-		user_disc = false
-		last_name = sel_name
-		_save_pref()
-		pair_layer.visible = false
+		if is_phone:  # on prévient le PC par UDP : il affichera le popup, puis il se connectera ici
+			req_peer.set_dest_address(sel_key, BEACON_PORT)
+			req_peer.put_packet(("REQ|" + _phone_name()).to_utf8_buffer())
+			req_until = Time.get_ticks_msec() + 60000
+			pair_info.text = "Demande envoyée à « %s » : accepte-la sur le PC." % sel_name
+			phones_sig = ""
+			return
+		_pc_connect_to(sel_key, sel_name)
+	pair_layer.visible = false
 	phones_sig = ""
 	_refresh_pair_btn()
+
+
+func _pc_connect_to(key: String, nm: String) -> void:
+	if peer != null:
+		_pc_unlink()
+	chosen = key
+	sel_key = key
+	user_disc = false
+	last_name = nm
+	_save_pref()
+
+
+## Popup « Accepter / Refuser » (demande de pairing reçue).
+func _ask_pair(text: String, yes: Callable, no: Callable) -> void:
+	if ask_layer == null:
+		ask_layer = Control.new()
+		ask_layer.set_anchors_preset(Control.PRESET_FULL_RECT)
+		var dim := ColorRect.new()
+		dim.color = Color(0, 0, 0, 0.75)
+		dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+		ask_layer.add_child(dim)
+		var cen := CenterContainer.new()
+		cen.set_anchors_preset(Control.PRESET_FULL_RECT)
+		ask_layer.add_child(cen)
+		var col := VBoxContainer.new()
+		col.add_theme_constant_override("separation", 16)
+		col.custom_minimum_size = Vector2(clampf(get_viewport_rect().size.x - 60.0, 260.0, 440.0), 0)
+		cen.add_child(col)
+		_label("Demande de pairing", 24, C_TEXT, col)
+		ask_lbl = _label("", 18, C_TEXT, col)
+		ask_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		ask_yes = Button.new()
+		ask_yes.text = "Accepter"
+		ask_yes.custom_minimum_size = Vector2(0, 78)
+		ask_yes.add_theme_font_size_override("font_size", 24)
+		ask_yes.modulate = Color(0.5, 1.0, 0.75)
+		col.add_child(ask_yes)
+		ask_no = Button.new()
+		ask_no.text = "Refuser"
+		ask_no.custom_minimum_size = Vector2(0, 56)
+		col.add_child(ask_no)
+		add_child(ask_layer)
+	for sg in [ask_yes.pressed, ask_no.pressed]:
+		for cn in sg.get_connections():
+			sg.disconnect(cn["callable"])
+	ask_lbl.text = text
+	ask_yes.pressed.connect(func():
+		ask_layer.visible = false
+		yes.call())
+	ask_no.pressed.connect(func():
+		ask_layer.visible = false
+		no.call())
+	ask_layer.visible = true
+	move_child(ask_layer, get_child_count() - 1)
 
 
 func _pc_scan() -> void:
@@ -1510,6 +1589,11 @@ func _pc_scan() -> void:
 		if txt.begins_with("POCKET"):
 			var nm := txt.substr(7) if txt.length() > 7 else "Téléphone"
 			phones[ip] = {"name": nm, "ip": ip, "t": now}
+		elif txt.begins_with("REQ|") and not linked:  # un téléphone demande le pairing : popup de confirmation
+			var rn := txt.substr(4)
+			var rip := ip
+			_ask_pair("Le téléphone « %s » demande à se connecter." % rn, func():
+				_pc_connect_to(rip, rn), func(): pass)
 	for k in phones.keys():
 		if now - int(phones[k]["t"]) > 4000:
 			phones.erase(k)
@@ -1542,31 +1626,16 @@ func _pc_scan() -> void:
 				break
 	if sig != phones_sig and phones_box != null:
 		phones_sig = sig
-		for c in phones_box.get_children():
-			c.queue_free()
-		if list.is_empty():
-			var e := Label.new()
-			e.text = "Aucun pour l'instant. Ouvre Pocket Speaker sur le téléphone (même Wi-Fi) ou branche-le."
-			e.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-			e.add_theme_color_override("font_color", C_DIM)
-			phones_box.add_child(e)
-		for d in list:
-			var b := Button.new()
-			b.text = ("● " if d["key"] == sel_key else "") + d["name"]
-			b.custom_minimum_size = Vector2(0, 50)
-			var key: String = d["key"]
-			var nm2: String = d["name"]
-			b.pressed.connect(func():
-				sel_key = key
-				sel_name = nm2.split(" · ")[0]
-				phones_sig = ""
-				_refresh_pair_btn())
-			phones_box.add_child(b)
+		_fill_list(list)
 	_refresh_pair_btn()
 
 
 func _pc_process(delta: float) -> void:
 	_pc_scan()
+	pc_beacon_t -= delta
+	if pc_beacon_t <= 0.0:
+		pc_beacon_t = 1.0
+		beacon.put_packet(("PC|" + _pc_name()).to_utf8_buffer())
 	if peer != null:
 		if not _read():
 			_pc_unlink()
@@ -1574,7 +1643,6 @@ func _pc_process(delta: float) -> void:
 		if peer.get_status() == StreamPeerTCP.STATUS_CONNECTED:
 			if not name_sent:
 				name_sent = true
-				_send(T_PIN, pin.to_utf8_buffer())
 				_send(T_NAME, PackedByteArray([mascot]) + _pc_name().to_utf8_buffer())
 			if linked:
 				linked_t += delta
@@ -1593,8 +1661,8 @@ func _pc_process(delta: float) -> void:
 					get_tree().quit()
 			else:
 				hello_t += delta
-				_set_status(ST_WAIT, "Téléphone trouvé", "Ouverture de la liaison…")
-				if hello_t > 6.0:
+				_set_status(ST_WAIT, "En attente de l'acceptation", "Accepte la demande sur l'autre appareil.")
+				if hello_t > 45.0:
 					_pc_unlink()
 		return
 	mtx.lock()
@@ -1610,7 +1678,7 @@ func _pc_process(delta: float) -> void:
 		_set_status(ST_WAIT, "Connexion à " + str(phones[chosen]["name"]) + "…", "")
 	elif chosen == "":
 		if Time.get_ticks_msec() - deny_t < 6000:
-			_set_status(ST_IDLE, "Code refusé", "Entre le code PIN affiché ici dans l'app du téléphone.")
+			_set_status(ST_IDLE, "Pairing refusé", "L'autre appareil a refusé la demande.")
 		else:
 			_set_status(ST_IDLE, "Choisis ton téléphone", msg + "\nOu ouvre l'app sur le téléphone (même Wi-Fi).")
 		return
