@@ -4,8 +4,10 @@ extends Control
 ## Le PC découpe la parole en diapos (titre et changement de sujet par Ollama) ; le téléphone reçoit l'état des diapos.
 
 signal slide_changed(sid: int, title: String, ids: Array)
+signal graph_changed(sid: int, payload: String)  # carte des entités d'une diapo (JSON compact) → téléphone
 
 const KPx := preload("res://kit/ui/px.gd")
+const GraphScript := preload("res://graphview.gd")
 const INTER := preload("res://kit/fonts/Inter-500.woff2")
 const POSTIT := ["ffe66d", "ff9ecb", "8fe3ff", "b7f08a"]
 const MAX_PER_SLIDE := 6
@@ -31,6 +33,14 @@ var _strip: HBoxContainer
 var _strip_sc: ScrollContainer
 var _btn_live: Button
 var _empty: Label
+var _graph: Control
+var _btn_mode: Button
+var view_mode := 0  # 0 auto · 1 post-it · 2 carte · 3 tout (toutes les diapos réunies)
+const MODES := ["Vue : auto", "Vue : post-it", "Vue : carte", "Vue : tout"]
+var entity_count := {}  # nom -> nombre de diapos où l'entité apparaît
+var _ex_pending: Array = []
+var _ex_busy := false
+var _ex_timer: Timer
 
 
 func _init() -> void:
@@ -83,6 +93,15 @@ func _ready() -> void:
 	_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	bv.add_child(_scroll)
+	_graph = GraphScript.new()
+	_graph.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_graph.visible = false
+	bv.add_child(_graph)
+	_ex_timer = Timer.new()
+	_ex_timer.one_shot = true
+	_ex_timer.wait_time = 2.5
+	_ex_timer.timeout.connect(_extract_next)
+	add_child(_ex_timer)
 	var holder := MarginContainer.new()
 	holder.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	holder.add_theme_constant_override("margin_right", 6)
@@ -110,6 +129,12 @@ func _ready() -> void:
 	col.add_child(nav)
 	nav.add_child(_nav_btn("◀", func(): _go(view - 1)))
 	nav.add_child(_nav_btn("▶", func(): _go(view + 1)))
+	_btn_mode = _nav_btn(MODES[0], func():
+		view_mode = (view_mode + 1) % MODES.size()
+		_btn_mode.text = MODES[view_mode]
+		_render(false))
+	_btn_mode.custom_minimum_size.x = 150
+	nav.add_child(_btn_mode)
 	var sp := Control.new()
 	sp.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	nav.add_child(sp)
@@ -204,6 +229,8 @@ class Card extends MarginContainer:
 # ------------------------------------------------------------------ données
 
 func clear() -> void:
+	entity_count.clear()
+	_ex_pending.clear()
 	blocks.clear()
 	slides.clear()
 	view = -1
@@ -235,6 +262,7 @@ func add_sentence(id: int, text: String) -> void:
 		elif n >= 3 and text.split(" ", false).size() >= 4:
 			_ask_topic(sl, id, text)
 	slide_changed.emit(sl["id"], sl["title"], sl["ids"].duplicate())
+	_schedule_extract(sl["id"])
 	_refresh()
 
 
@@ -280,10 +308,10 @@ func _passage(sl: Dictionary) -> String:
 
 # ------------------------------------------------------------------ Ollama (titres et changements de sujet)
 
-func _llm(prompt: String, cb: Callable) -> void:
-	var model := OS.get_environment("POCKET_CHAT_MODEL") if OS.get_environment("POCKET_CHAT_MODEL") != "" else "gemma3:4b"
+func _llm(prompt: String, cb: Callable, model_name := "", as_json := false, tokens := 30) -> void:
+	var model := model_name if model_name != "" else (OS.get_environment("POCKET_CHAT_MODEL") if OS.get_environment("POCKET_CHAT_MODEL") != "" else "gemma3:4b")
 	var http := HTTPRequest.new()
-	http.timeout = 30
+	http.timeout = 60 if as_json else 30
 	add_child(http)
 	http.request_completed.connect(func(_r: int, code: int, _h: PackedStringArray, body: PackedByteArray):
 		http.queue_free()
@@ -294,8 +322,8 @@ func _llm(prompt: String, cb: Callable) -> void:
 				ans = str(j.get("response", "")).strip_edges()
 		cb.call(ans))
 	if http.request("http://127.0.0.1:11434/api/generate", ["Content-Type: application/json"], HTTPClient.METHOD_POST,
-			JSON.stringify({"model": model, "prompt": prompt, "stream": false, "keep_alive": "30m",
-			"options": {"temperature": 0, "num_predict": 30}})) != OK:
+			JSON.stringify({"model": model, "prompt": prompt, "stream": false, "keep_alive": "30m", "think": false,
+			"format": "json" if as_json else "", "options": {"temperature": 0, "num_predict": tokens}})) != OK:
 		http.queue_free()
 
 
@@ -367,9 +395,16 @@ func _render(anim: bool) -> void:
 		c.queue_free()
 	if view < 0 or view >= slides.size():
 		_title.text = ""
+		_graph.visible = false
+		_scroll.visible = true
 		return
 	var sl: Dictionary = slides[view]
-	_title.text = sl["title"]
+	_title.text = sl["title"] if view_mode != 3 else "Toute la conférence"
+	var mapped := _show_map(sl)
+	_graph.visible = mapped
+	_scroll.visible = not mapped
+	if mapped:
+		return
 	var n: int = sl["ids"].size()
 	_grid.columns = 1 if n <= 2 else 2
 	var k := 0
@@ -439,3 +474,116 @@ func _build_strip() -> void:
 	await get_tree().process_frame
 	if is_instance_valid(_strip_sc) and follow:
 		_strip_sc.scroll_horizontal = int(_strip_sc.get_h_scroll_bar().max_value)
+
+
+# ------------------------------------------------------------------ carte des entités (qwen3:8b)
+
+func _schedule_extract(sid: int) -> void:
+	if not master:
+		return
+	if not _ex_pending.has(sid):
+		_ex_pending.append(sid)
+	_ex_timer.start()  # on attend 2,5 s sans nouvelle phrase
+
+
+func _extract_next() -> void:
+	if _ex_busy or _ex_pending.is_empty():
+		return
+	var sid: int = _ex_pending.pop_front()
+	var sl := _find(sid)
+	if sl.is_empty() or sl["ids"].size() < 2:
+		_extract_next()
+		return
+	_ex_busy = true
+	var model := OS.get_environment("POCKET_GRAPH_MODEL") if OS.get_environment("POCKET_GRAPH_MODEL") != "" else "qwen3:8b"
+	var prompt := "Tu analyses un passage de conférence ou d'histoire. Réponds UNIQUEMENT en JSON de cette forme : {\"affichage\":\"carte\" ou \"post-it\",\"entites\":[{\"nom\":\"...\",\"type\":\"personne|lieu|objet|notion|date\"}],\"liens\":[{\"de\":\"nom\",\"vers\":\"nom\",\"relation\":\"verbe court\"}]}. Règles : inclus TOUJOURS les personnes, lieux, objets, notions et dates importants cités (même s'ils sont peu reliés) ; maximum 8 entités et 10 liens ; noms courts (1 à 3 mots, avec le prénom ou le nom complet d'une personne) et strictement identiques dans les liens et les entités ; un lien va du sujet de la phrase vers son complément (exemple : « Marie épouse Pierre à Paris » donne Marie→Pierre « épouse » et Marie→Paris « vit à »). Mets \"carte\" seulement s'il y a au moins 3 entités reliées entre elles, sinon \"post-it\". Passage :\n" + _passage(sl).left(1500)
+	_llm(prompt, func(ans: String):
+		_ex_busy = false
+		_apply_extract(sid, ans)
+		_extract_next(), model, true, 450)
+
+
+func _apply_extract(sid: int, ans: String) -> void:
+	var sl := _find(sid)
+	var j: Variant = JSON.parse_string(ans)
+	if sl.is_empty() or not (j is Dictionary):
+		return
+	var ents: Array = []
+	var idx := {}
+	for e in j.get("entites", []):
+		if not (e is Dictionary):
+			continue
+		var nm := str(e.get("nom", "")).strip_edges().left(28)
+		var kd := str(e.get("type", "notion")).to_lower()
+		if nm == "" or idx.has(nm.to_lower()) or ents.size() >= 8:
+			continue
+		idx[nm.to_lower()] = ents.size()
+		ents.append({"name": nm, "kind": kd if kd in ["personne", "lieu", "objet", "notion", "date"] else "notion"})
+	var rels: Array = []
+	for r in j.get("liens", []):
+		if not (r is Dictionary):
+			continue
+		var a: String = str(r.get("de", "")).strip_edges().to_lower()
+		var b: String = str(r.get("vers", "")).strip_edges().to_lower()
+		if idx.has(a) and idx.has(b) and a != b and rels.size() < 10:
+			rels.append({"a": idx[a], "b": idx[b], "label": str(r.get("relation", "")).strip_edges().left(22)})
+	var g := {"type": "carte" if str(j.get("affichage", "")) == "carte" and ents.size() >= 3 and not rels.is_empty() else "post-it", "entities": ents, "relations": rels}
+	_set_graph(sl, g)
+	graph_changed.emit(sid, JSON.stringify(g))
+
+
+func _set_graph(sl: Dictionary, g: Dictionary) -> void:
+	for e in sl.get("graph", {}).get("entities", []):  # on retire l'ancien décompte de cette diapo
+		var k: String = e["name"].to_lower()
+		entity_count[k] = maxi(0, int(entity_count.get(k, 1)) - 1)
+	sl["graph"] = g
+	for e in g["entities"]:
+		var k2: String = e["name"].to_lower()
+		entity_count[k2] = int(entity_count.get(k2, 0)) + 1
+	_refresh()
+
+
+## Téléphone : carte d'une diapo envoyée par le PC.
+func apply_graph(sid: int, payload: String) -> void:
+	var sl := _find(sid)
+	var j: Variant = JSON.parse_string(payload)
+	if sl.is_empty() or not (j is Dictionary):
+		return
+	_set_graph(sl, j)
+
+
+func _show_map(sl: Dictionary) -> bool:
+	var ents: Array = []
+	var rels: Array = []
+	if view_mode == 3:  # toutes les diapos réunies, doublons fusionnés
+		var idx := {}
+		for s2 in slides:
+			var g2: Dictionary = s2.get("graph", {})
+			var local := {}
+			for i in g2.get("entities", []).size():
+				var e: Dictionary = g2["entities"][i]
+				var k: String = e["name"].to_lower()
+				if not idx.has(k):
+					idx[k] = ents.size()
+					ents.append({"name": e["name"], "kind": e["kind"], "count": int(entity_count.get(k, 1))})
+				local[i] = idx[k]
+			for r in g2.get("relations", []):
+				var pair := [local[int(r["a"])], local[int(r["b"])]]
+				var dup := false
+				for r0 in rels:
+					if r0["a"] == pair[0] and r0["b"] == pair[1]:
+						dup = true
+				if not dup:
+					rels.append({"a": pair[0], "b": pair[1], "label": r["label"]})
+		if ents.is_empty():
+			return false
+		_graph.set_graph(ents, rels)
+		return true
+	var g: Dictionary = sl.get("graph", {})
+	var want: bool = view_mode == 2 or (view_mode == 0 and g.get("type", "") == "carte")
+	if not want or g.get("entities", []).size() < 2:
+		return false
+	for e2 in g["entities"]:
+		ents.append({"name": e2["name"], "kind": e2["kind"], "count": int(entity_count.get(e2["name"].to_lower(), 1))})
+	_graph.set_graph(ents, g["relations"])
+	return true

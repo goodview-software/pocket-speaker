@@ -890,6 +890,9 @@ func _build_ui() -> void:
 		var lw := []
 		return _sub_label(_linkify(t, col, lw), t, fs, lw)
 	lesson.slide_changed.connect(_on_slide)
+	lesson.graph_changed.connect(func(sid: int, payload: String):
+		if not is_phone and linked:
+			_send(T_TEXT, ("\u000b%d\u001f%s" % [sid, payload]).to_utf8_buffer().slice(0, 3000)))
 	lesson.visible = false
 	add_child(lesson)
 	move_child(lesson, 1)
@@ -1797,16 +1800,15 @@ func _pc_pump_subs() -> void:
 ## Aperçu sans voix (POCKET_DEMO=1) : une petite conférence qui arrive phrase par phrase ; POCKET_SHOT=fichier.png capture puis quitte.
 func _demo() -> void:
 	want_subs = true
-	var txt := ["Bonjour à tous, bienvenue dans cette conférence sur le système solaire.", "Notre système solaire compte huit planètes qui tournent autour du Soleil.",
-		"Mercure est la plus proche du Soleil et Neptune la plus lointaine.", "La Terre est la seule planète où l'on a trouvé de la vie.",
-		"Passons maintenant aux missions spatiales des dernières années.", "En 2021, le rover Perseverance a atterri sur Mars.",
-		"Il cherche des traces de vie ancienne dans les roches martiennes.", "Le télescope James Webb observe des galaxies très lointaines."]
+	var txt := ["Marie Curie est née à Varsovie en 1867.", "Elle a épousé Pierre Curie, un physicien français, en 1895.",
+		"Ensemble ils ont découvert le radium et le polonium à Paris.", "En 1903, ils reçoivent le prix Nobel de physique avec Henri Becquerel.",
+		"Pierre meurt dans un accident de la route en 1906.", "Marie obtient seule un second prix Nobel, de chimie, en 1911."]
 	for i in txt.size():
 		_add_block(i + 1, txt[i])
 		await get_tree().create_timer(1.2).timeout
 	var shot := OS.get_environment("POCKET_SHOT")
 	if shot != "":
-		await get_tree().create_timer(6.0).timeout
+		await get_tree().create_timer(25.0).timeout
 		get_viewport().get_texture().get_image().save_png(shot)
 		get_tree().quit()
 
@@ -1829,6 +1831,10 @@ func _set_live(t: String) -> void:
 func _bubble(text: String) -> void:
 	if text.begins_with("\u0006"):
 		_set_live(text.substr(1))
+	elif text.begins_with("\u000b"):
+		var kk := text.find("\u001f")
+		if kk > 1:
+			lesson.apply_graph(text.substr(1, kk - 1).to_int(), text.substr(kk + 1))
 	elif text.begins_with("\u0009"):
 		var parts := text.substr(1).split("\u001f")
 		if parts.size() >= 3:
