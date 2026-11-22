@@ -25,6 +25,7 @@ const T_TEXT := 11  # PC -> téléphone : phrase comprise par Whisper (UTF-8)
 const LANGS := [["none", "Aucune"], ["es", "Español"], ["en", "English"], ["fr", "Français"], ["de", "Deutsch"], ["it", "Italiano"], ["pt", "Português"]]
 const T_ASK := 12  # téléphone -> PC : [mode u8 : 0 chat, 1 explication d'un mot] + texte UTF-8
 const T_ANS := 13  # PC -> téléphone : réponse de la mascotte (UTF-8)
+const T_CMD := 14  # téléphone -> PC : [1 pause/lecture, 2 reculer de 5 s] du média en cours
 const T_PING := 7
 const T_PONG := 8
 const SINK := "pocket_out"
@@ -261,6 +262,7 @@ var bubbles: VBoxContainer
 var settings_layer: Control
 var settings_box: VBoxContainer
 var press_t := -1.0
+var tap_pending := -1.0
 var subs_card: Control
 var chat_sc: ScrollContainer
 var chat_in: LineEdit
@@ -606,7 +608,7 @@ func _build_ui() -> void:
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	sub.custom_minimum_size = Vector2(0, 40)
-	var hint_l := _label("Reste appuyé sur le personnage pour les paramètres", 13, C_IDLE, content)
+	var hint_l := _label("Personnage : appui = pause · double appui = reculer 5 s · appui long = paramètres", 13, C_IDLE, content)
 	hint_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	hint_l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 
@@ -651,7 +653,16 @@ func _build_ui() -> void:
 	th.add_child(xb)
 	orb.gui_input.connect(func(e: InputEvent):
 		if e is InputEventMouseButton and e.button_index == MOUSE_BUTTON_LEFT:
-			press_t = 0.0 if e.pressed else -1.0)
+			if e.pressed:
+				press_t = 0.0
+			else:
+				if press_t >= 0.0 and press_t < 0.6:  # appui court
+					if tap_pending >= 0.0:
+						tap_pending = -1.0
+						_media(2)  # double appui : on recule
+					else:
+						tap_pending = 0.0
+				press_t = -1.0)
 
 	var c1 := _card(content)
 	var r1 := HBoxContainer.new()
@@ -889,6 +900,11 @@ func _set_status(st: int, a: String, b: String) -> void:
 
 
 func _ui_tick(delta: float) -> void:
+	if tap_pending >= 0.0:
+		tap_pending += delta
+		if tap_pending > 0.35:
+			tap_pending = -1.0
+			_media(1)
 	if press_t >= 0.0:
 		press_t += delta
 		if press_t > 0.6:
@@ -935,6 +951,25 @@ func _on_mic(on: bool) -> void:
 	else:
 		_pc_route()
 	_send_ctrl()
+
+
+## Pause/lecture (1) ou retour de 5 s (2) du média en cours sur le PC ; le téléphone transmet au PC.
+func _media(code: int) -> void:
+	if is_phone:
+		_send(T_CMD, PackedByteArray([code]))
+		return
+	var sc := ""
+	for p in [OS.get_executable_path().get_base_dir() + "/media.sh", ProjectSettings.globalize_path("res://tools/media.sh")]:
+		if FileAccess.file_exists(p):
+			sc = p
+			break
+	if sc == "":
+		return
+	var arg := "playpause" if code == 1 else "back"
+	if OS.get_environment("FLATPAK_ID") != "":
+		OS.create_process("flatpak-spawn", ["--host", "sh", sc, arg])
+	else:
+		OS.create_process("sh", [sc, arg])
 
 
 func _delay_text() -> void:
@@ -1037,6 +1072,9 @@ func _on_frame(t: int, pl: PackedByteArray) -> void:
 		T_PONG:
 			if pl.size() >= 4:
 				rtt_ms = int(Time.get_ticks_msec() - pl.decode_u32(0)) & 0xFFFF
+		T_CMD:
+			if not is_phone and pl.size() >= 1:
+				_media(pl[0])
 		T_ANS:
 			if is_phone:
 				var at := pl.get_string_from_utf8()

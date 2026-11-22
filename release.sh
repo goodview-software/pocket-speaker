@@ -16,7 +16,7 @@ ENGINE="$($GODOT --version | cut -d. -f1-3)"
 $GODOT --headless --path . --export-pack "Linux" "$OUT/pocket-speaker-$V.pck"
 $GODOT --headless --path . --export-release "Linux" build/linux/PocketSpeaker.x86_64
 cp "$OUT/PocketSpeaker.apk" build/linux/pocket-speaker.apk
-cp icon.png tools/whisper_stream.py build/linux/
+cp icon.png tools/whisper_stream.py tools/media.sh build/linux/
 rm -rf build/PocketSpeaker && cp -r build/linux build/PocketSpeaker
 (cd build && zip -qr "release/PocketSpeaker-linux.zip" PocketSpeaker) && rm -rf build/PocketSpeaker
 rm -f "$OUT"/*.idsig
