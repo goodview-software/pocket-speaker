@@ -568,6 +568,15 @@ func _build_ui() -> void:
 	orb = Orb.new()
 	orb.custom_minimum_size = Vector2(0, 230)
 	content.add_child(orb)
+	if not is_phone:  # PC : bulles à droite de la mascotte
+		bubbles = VBoxContainer.new()
+		bubbles.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		bubbles.alignment = BoxContainer.ALIGNMENT_CENTER
+		bubbles.add_theme_constant_override("separation", 6)
+		bubbles.anchor_left = 0.6
+		bubbles.anchor_right = 1.0
+		bubbles.anchor_bottom = 1.0
+		orb.add_child(bubbles)
 	status = _label("", 22, C_TEXT, content)
 	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sub = _label("", 14, C_DIM, content)
@@ -1434,6 +1443,7 @@ func _pc_pump_subs() -> void:
 	mtx.unlock()
 	for t: String in q:
 		_send(T_TEXT, t.to_utf8_buffer().slice(0, 1000))
+		_bubble(t)
 		subs_lines.append(t)
 		while subs_lines.size() > 4:
 			subs_lines.pop_front()
@@ -1459,11 +1469,11 @@ func _bubble(text: String) -> void:
 	var l := Label.new()
 	l.text = text
 	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	l.add_theme_font_size_override("font_size", 20)
+	l.add_theme_font_size_override("font_size", 20 if is_phone else 15)
 	l.add_theme_color_override("font_color", C_TEXT)
 	pc.add_child(l)
 	bubbles.add_child(pc)
-	while bubbles.get_child_count() > 4:
+	while bubbles.get_child_count() > (4 if is_phone else 3):
 		bubbles.get_child(0).queue_free()
 		bubbles.remove_child(bubbles.get_child(0))
 	var tw := pc.create_tween()
