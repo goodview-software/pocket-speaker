@@ -457,9 +457,14 @@ func _process(delta: float) -> void:
 func _shutdown() -> void:
 	quit = true
 	if not is_phone:
+		_pc_subs_stop()  # tue Vosk et rejoint son fil (sinon la fenêtre reste ouverte)
 		_pc_teardown()
 		if th_adb != null:
-			th_adb.wait_to_finish()
+			var t0 := Time.get_ticks_msec()
+			while th_adb.is_alive() and Time.get_ticks_msec() - t0 < 1500:
+				OS.delay_msec(50)
+			if not th_adb.is_alive():
+				th_adb.wait_to_finish()
 			th_adb = null
 
 
@@ -469,6 +474,7 @@ func _load_pref() -> void:
 		link_mode = int(cf.get_value("net", "mode", 0))
 		vol = float(cf.get_value("audio", "vol", 1.0))
 		pin = str(cf.get_value("net", "pin", ""))
+		phone_pin = str(cf.get_value("net", "phone_pin", ""))
 		last_name = str(cf.get_value("net", "last", ""))
 		want_subs = bool(cf.get_value("audio", "subs", false))
 		sub_target = int(cf.get_value("audio", "target", 0))

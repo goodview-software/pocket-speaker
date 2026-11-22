@@ -11,11 +11,15 @@ OUT=build/release; rm -rf "$OUT"; mkdir -p "$OUT" build/linux
 
 sed -i "s/^const VERSION := .*/const VERSION := \"$V\"/" version.gd
 sed -i "s/^version\/name=.*/version\/name=\"$V\"/" export_presets.cfg
+CODE=$(echo "$V" | awk -F. '{print $1*10000+$2*100+$3}')  # versionCode croissant : sans ça Android/le PC ne réinstallent jamais l'APK
+sed -i "s/^version\/code=.*/version\/code=$CODE/" export_presets.cfg
+sed -i "s/^const VERSION := [0-9]*.*/const VERSION := $CODE  # versionCode de l'APK/" main.gd
 $GODOT --headless --path . --export-debug "Android" "$OUT/PocketSpeaker.apk"
 ENGINE="$($GODOT --version | cut -d. -f1-3)"
 $GODOT --headless --path . --export-pack "Linux" "$OUT/pocket-speaker-$V.pck"
 $GODOT --headless --path . --export-release "Linux" build/linux/PocketSpeaker.x86_64
 cp "$OUT/PocketSpeaker.apk" build/linux/pocket-speaker.apk
+cp "$OUT/PocketSpeaker.apk" build/pocket-speaker.apk
 cp icon.png tools/vosk_stream.py tools/media.sh build/linux/
 rm -rf build/PocketSpeaker && cp -r build/linux build/PocketSpeaker
 (cd build && zip -qr "release/PocketSpeaker-linux.zip" PocketSpeaker) && rm -rf build/PocketSpeaker
