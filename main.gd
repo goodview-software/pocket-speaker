@@ -1377,7 +1377,13 @@ func _pc_subs_sync() -> void:
 			var sc := _subs_script()
 			if sc == "":
 				return
-			var io := OS.execute_with_pipe("python3", [sc, OS.get_environment("POCKET_WHISPER") if OS.get_environment("POCKET_WHISPER") != "" else "small", "auto"], false)
+			var model := OS.get_environment("POCKET_WHISPER") if OS.get_environment("POCKET_WHISPER") != "" else "small"
+			var cmd := "python3"
+			var args := PackedStringArray([sc, model, "auto"])
+			if OS.get_environment("FLATPAK_ID") != "":  # le Python du sandbox n'a pas Whisper : on lance sur l'hôte
+				cmd = "flatpak-spawn"
+				args = PackedStringArray(["--host", "--watch-bus", "python3"]) + args
+			var io := OS.execute_with_pipe(cmd, args, false)
 			if io.has("pid"):
 				subs_pid = io["pid"]
 				subs_io = io["stdio"]
