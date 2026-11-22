@@ -2,7 +2,7 @@
 """Sous-titres en direct : lit du PCM s16le stéréo 48 kHz sur stdin, écrit une ligne de texte (Whisper) par phrase sur stdout.
 Usage : whisper_stream.py [modèle=small] [langue=auto] [traduction=none|es|en|fr|de|it|pt]
 Sortie : « texte » ou « texte\x02traduction » (traduction via Ollama, gemma3:4b)."""
-import sys, os, re, json, threading, queue, urllib.request
+import sys, os, re, time, json, threading, queue, urllib.request
 import numpy as np
 import whisper
 
@@ -91,10 +91,12 @@ def reader():  # vide stdin en continu pour ne jamais bloquer l'appli pendant un
 buf = np.zeros(0, np.float32)
 voiced = False
 sil = 0
+last_partial = 0.0
 
 def flush(a):
     global buf, voiced, sil
     buf = np.zeros(0, np.float32); voiced = False; sil = 0
+    print("\x06", flush=True)  # efface la ligne en direct
     if len(a) < MIN_S * 16000:
         return
     r = model.transcribe(a, language=lang, fp16=(dev == "cuda"), temperature=0.0,
@@ -141,5 +143,16 @@ while True:
         buf = np.concatenate([buf, m])
     if not voiced:
         buf = buf[-int(16000 * 0.3):]
-    elif len(buf) >= MAX_S * 16000 or (sil * 0.1 >= SIL_S and len(buf) >= MIN_S * 16000):
+    if voiced and not kid and len(buf) >= 0.5 * 16000 and qq.qsize() < 3 and time.time() - last_partial >= 0.35 \
+            and not (len(buf) >= MAX_S * 16000 or (sil * 0.1 >= SIL_S and len(buf) >= MIN_S * 16000)):
+        last_partial = time.time()
+        try:
+            r = model.transcribe(buf, language=lang, fp16=(dev == "cuda"), temperature=0.0, beam_size=None,
+                                 condition_on_previous_text=False, no_speech_threshold=0.5, without_timestamps=True)
+            t = r["text"].strip()
+            if t and not BAD.search(t):
+                print("\x06" + t.replace("\n", " "), flush=True)
+        except Exception:
+            pass
+    if voiced and (len(buf) >= MAX_S * 16000 or (sil * 0.1 >= SIL_S and len(buf) >= MIN_S * 16000)):
         flush(buf)

@@ -275,6 +275,7 @@ var pop_word: Label
 var pop_text: Label
 var subs_sc: ScrollContainer
 var subs_rows: VBoxContainer
+var live_lbl: Label  # mots en direct (hypothèse en cours), avant la fin de la phrase
 var sub_delay := 0.0  # secondes de décalage du son (pour avoir le temps de lire)
 var delay_q: Array = []
 var sub_sched: Array = []  # groupes de mots en attente : [heure d'affichage ms, texte]
@@ -827,6 +828,14 @@ func _build_ui() -> void:
 	chat_root.offset_bottom = -14
 	chat_root.add_theme_constant_override("separation", 8)
 	add_child(chat_root)
+	live_lbl = Label.new()
+	live_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	live_lbl.add_theme_font_override("font", INTER)
+	live_lbl.add_theme_font_size_override("font_size", 24 if is_phone else 21)
+	live_lbl.add_theme_color_override("font_color", C_OK)
+	live_lbl.custom_minimum_size = Vector2(0, 34)
+	live_lbl.visible = false
+	chat_root.add_child(live_lbl)
 	subs_sc = ScrollContainer.new()
 	subs_sc.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	subs_sc.size_flags_stretch_ratio = 2.0
@@ -1740,6 +1749,10 @@ func _pc_pump_subs() -> void:
 		subs_out = []
 		mtx.unlock()
 		for line: String in q:
+			if line.begins_with("\u0006"):
+				_send(T_TEXT, line.to_utf8_buffer().slice(0, 1000))
+				_set_live(line.substr(1))
+				continue
 			var k := line.find("\u0003")
 			var due := now
 			if k > 0:
@@ -1759,7 +1772,16 @@ func _pc_pump_subs() -> void:
 		_bubble(t)
 
 
+func _set_live(t: String) -> void:
+	if live_lbl != null:
+		live_lbl.text = t
+		live_lbl.visible = t != ""
+
+
 func _bubble(text: String) -> void:
+	if text.begins_with("\u0006"):
+		_set_live(text.substr(1))
+		return
 	if text.strip_edges() == "":
 		return
 	var dur := 2000
