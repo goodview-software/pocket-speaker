@@ -23,6 +23,8 @@ const T_PIN := 9  # PC -> téléphone : code PIN affiché sur le PC
 const T_DENY := 10  # téléphone -> PC : code refusé
 const T_TEXT := 11  # PC -> téléphone : phrase comprise par Whisper (UTF-8)
 const LANGS := [["none", "Aucune"], ["es", "Español"], ["en", "English"], ["fr", "Français"], ["de", "Deutsch"], ["it", "Italiano"], ["pt", "Português"]]
+const T_ASK := 12  # téléphone -> PC : [mode u8 : 0 chat, 1 explication d'un mot] + texte UTF-8
+const T_ANS := 13  # PC -> téléphone : réponse de la mascotte (UTF-8)
 const T_PING := 7
 const T_PONG := 8
 const SINK := "pocket_out"
@@ -261,6 +263,10 @@ var settings_box: VBoxContainer
 var press_t := -1.0
 var subs_card: Control
 var chat_sc: ScrollContainer
+var chat_in: LineEdit
+var ai_hist: Array = []
+const INTER := preload("res://kit/fonts/Inter-500.woff2")
+const PERSONA := "Tu es Goody, la mascotte de Pocket Speaker : un assistant généraliste, chaleureux et clair. Réponds court (2-4 phrases), dans la langue de l'utilisateur, sans markdown."
 var sub_target := 0  # langue de traduction (index dans LANGS, 0 = aucune)
 var subs_target_run := -1
 var opt_lang: OptionButton
@@ -742,23 +748,46 @@ func _build_ui() -> void:
 			_save_pref())
 		content.add_child(seg)
 	content = main_content
+	var chat_root := VBoxContainer.new()
+	chat_root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	chat_root.anchor_top = 0.45
+	chat_root.offset_left = 14
+	chat_root.offset_right = -14
+	chat_root.offset_bottom = -14
+	chat_root.add_theme_constant_override("separation", 8)
+	add_child(chat_root)
 	chat_sc = ScrollContainer.new()
-	chat_sc.set_anchors_preset(Control.PRESET_FULL_RECT)
-	chat_sc.anchor_top = 0.5
-	chat_sc.offset_left = 14
-	chat_sc.offset_right = -14
-	chat_sc.offset_bottom = -14
+	chat_sc.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	chat_sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	add_child(chat_sc)
+	chat_root.add_child(chat_sc)
 	bubbles = VBoxContainer.new()
 	bubbles.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	bubbles.size_flags_vertical = Control.SIZE_SHRINK_END
 	bubbles.add_theme_constant_override("separation", 8)
 	var chat_wrap := VBoxContainer.new()
 	chat_wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	chat_wrap.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var chat_fill := Control.new()
+	chat_fill.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	chat_wrap.add_child(chat_fill)
 	chat_wrap.add_child(bubbles)
 	chat_sc.add_child(chat_wrap)
+	var crow := HBoxContainer.new()
+	crow.add_theme_constant_override("separation", 6)
+	chat_root.add_child(crow)
+	chat_in = LineEdit.new()
+	chat_in.placeholder_text = "Pose une question à Goody…"
+	chat_in.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	chat_in.custom_minimum_size = Vector2(0, 44)
+	chat_in.text_submitted.connect(func(_t: String): _chat_send())
+	crow.add_child(chat_in)
+	var sendb := Button.new()
+	sendb.text = "Envoyer"
+	sendb.pressed.connect(_chat_send)
+	crow.add_child(sendb)
+	var clrb := Button.new()
+	clrb.text = "Effacer"
+	clrb.pressed.connect(_chat_clear)
+	crow.add_child(clrb)
 	add_child(settings_layer)
 	_fit_width()
 
@@ -916,6 +945,12 @@ func _on_frame(t: int, pl: PackedByteArray) -> void:
 		T_PONG:
 			if pl.size() >= 4:
 				rtt_ms = int(Time.get_ticks_msec() - pl.decode_u32(0)) & 0xFFFF
+		T_ANS:
+			if is_phone:
+				_add_msg("ai", pl.get_string_from_utf8())
+		T_ASK:
+			if not is_phone and pl.size() >= 2:
+				_ai_ask(pl.slice(1).get_string_from_utf8(), pl[0], true)
 		T_TEXT:
 			if is_phone and want_subs:
 				_bubble(pl.get_string_from_utf8())
@@ -1536,20 +1571,44 @@ func _pc_pump_subs() -> void:
 
 
 func _bubble(text: String) -> void:
-	if bubbles == null or text.strip_edges() == "":
+	if text.strip_edges() == "":
 		return
 	var parts := text.split("\u0002")
-	var orig := parts[0].replace("[", "[lb]")
-	var bb := "[color=#e8ecf1]" + orig + "[/color]"
-	if parts.size() > 1:  # traduction : le texte d'origine est barré, remplacé par la traduction
-		bb = "[color=#8892a0][s]" + orig + "[/s][/color]\n[color=#4de1b4]" + parts[1].replace("[", "[lb]") + "[/color]"
+	if parts.size() > 1:  # traduction : l'original est barré, la traduction est lisible et cliquable
+		_add_msg("sub", "[color=#8892a0][s]" + parts[0].replace("[", "[lb]") + "[/s][/color] [color=#ffb454][b]⟶[/b][/color] " + _linkify(parts[1], "#4de1b4"), parts[1])
+	else:
+		_add_msg("sub", _linkify(parts[0], "#e8ecf1"), parts[0])
+
+
+## Chaque mot devient cliquable (explication par la mascotte).
+func _linkify(t: String, col: String) -> String:
+	var out := "[color=" + col + "]"
+	var re := RegEx.create_from_string("[\\p{L}][\\p{L}\\p{N}'’-]*")
+	var p := 0
+	for m in re.search_all(t):
+		out += t.substr(p, m.get_start() - p).replace("[", "[lb]")
+		var w := m.get_string()
+		out += "[url=" + w + "]" + w + "[/url]"
+		p = m.get_end()
+	return out + t.substr(p).replace("[", "[lb]") + "[/color]"
+
+
+## kind : "sub" (parole), "me" (ma question), "ai" (réponse de Goody).
+func _add_msg(kind: String, bb: String, plain := "") -> void:
+	if bubbles == null:
+		return
+	var wrap := MarginContainer.new()
+	wrap.mouse_filter = Control.MOUSE_FILTER_PASS
+	wrap.add_theme_constant_override("margin_left", 48 if kind == "me" else 0)
+	wrap.add_theme_constant_override("margin_right", 48 if kind == "ai" else 0)
 	var pc := PanelContainer.new()
 	pc.mouse_filter = Control.MOUSE_FILTER_PASS
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.09, 0.11, 0.14, 0.92)
-	sb.border_color = Color(C_OK, 0.6)
+	sb.bg_color = {"sub": Color(0.09, 0.11, 0.14, 0.94), "me": Color(0.12, 0.2, 0.32, 0.95), "ai": Color(0.2, 0.15, 0.07, 0.95)}[kind]
+	sb.border_color = {"sub": C_OK, "me": Color("5aa9ff"), "ai": C_WAIT}[kind]
+	sb.border_color.a = 0.7
 	sb.set_border_width_all(2)
-	sb.set_corner_radius_all(16)
+	sb.set_corner_radius_all(14)
 	sb.content_margin_left = 16
 	sb.content_margin_right = 16
 	sb.content_margin_top = 10
@@ -1559,12 +1618,19 @@ func _bubble(text: String) -> void:
 	l.bbcode_enabled = true
 	l.fit_content = true
 	l.scroll_active = false
+	l.meta_underlined = true
 	l.mouse_filter = Control.MOUSE_FILTER_PASS
 	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	l.add_theme_font_size_override("normal_font_size", 20 if is_phone else 17)
+	l.add_theme_font_override("normal_font", INTER)
+	l.add_theme_font_override("bold_font", INTER)
+	l.add_theme_font_size_override("normal_font_size", 22 if is_phone else 19)
+	l.add_theme_color_override("default_color", C_TEXT)
 	l.text = bb
+	if plain != "":
+		l.meta_clicked.connect(func(m: Variant): _explain(str(m), plain))
 	pc.add_child(l)
-	bubbles.add_child(pc)
+	wrap.add_child(pc)
+	bubbles.add_child(wrap)
 	while bubbles.get_child_count() > 150:
 		var old := bubbles.get_child(0)
 		bubbles.remove_child(old)
@@ -1572,3 +1638,68 @@ func _bubble(text: String) -> void:
 	await get_tree().process_frame
 	await get_tree().process_frame
 	chat_sc.scroll_vertical = int(chat_sc.get_v_scroll_bar().max_value)
+
+
+func _chat_clear() -> void:
+	for c in bubbles.get_children():
+		c.queue_free()
+	ai_hist.clear()
+
+
+func _chat_send() -> void:
+	var t := chat_in.text.strip_edges()
+	if t == "":
+		return
+	chat_in.text = ""
+	_add_msg("me", t.replace("[", "[lb]"))
+	_ask(t, 0)
+
+
+func _explain(word: String, sentence: String) -> void:
+	var lang: String = LANGS[sub_target][1] if sub_target > 0 else "Français"
+	_add_msg("me", "ⓘ " + word)
+	_ask("Explique brièvement (1 à 2 phrases) le mot « %s » dans la phrase « %s ». Réponds en %s." % [word, sentence, lang], 1)
+
+
+func _ask(text: String, mode: int) -> void:
+	if is_phone:
+		if not linked:
+			_add_msg("ai", "Je ne suis pas relié au PC : lance Pocket Speaker dessus.")
+			return
+		_send(T_ASK, PackedByteArray([mode]) + text.to_utf8_buffer().slice(0, 4000))
+	else:
+		_ai_ask(text, mode, false)
+
+
+## PC : interroge Ollama (local) et affiche / renvoie la réponse de la mascotte.
+func _ai_ask(text: String, mode: int, from_phone: bool) -> void:
+	if from_phone and mode == 0:
+		_add_msg("me", "[color=#8892a0]📱[/color] " + text.replace("[", "[lb]"))
+	var msgs: Array = [{"role": "system", "content": PERSONA}]
+	if mode == 0:
+		msgs.append_array(ai_hist)
+	msgs.append({"role": "user", "content": text})
+	var model := OS.get_environment("POCKET_CHAT_MODEL") if OS.get_environment("POCKET_CHAT_MODEL") != "" else "gemma3:4b"
+	var http := HTTPRequest.new()
+	http.timeout = 90
+	add_child(http)
+	http.request_completed.connect(func(_r: int, code: int, _h: PackedStringArray, body: PackedByteArray):
+		http.queue_free()
+		var ans := "Ollama ne répond pas (lance « ollama serve »)."
+		if code == 200:
+			var j: Variant = JSON.parse_string(body.get_string_from_utf8())
+			if j is Dictionary and j.has("message"):
+				ans = str(j["message"].get("content", "")).strip_edges()
+		if mode == 0 and code == 200:
+			ai_hist.append({"role": "user", "content": text})
+			ai_hist.append({"role": "assistant", "content": ans})
+			while ai_hist.size() > 12:
+				ai_hist.pop_front()
+		_add_msg("ai", ans.replace("[", "[lb]"))
+		if from_phone:
+			_send(T_ANS, ans.to_utf8_buffer().slice(0, 60000)))
+	var err := http.request("http://127.0.0.1:11434/api/chat", ["Content-Type: application/json"], HTTPClient.METHOD_POST,
+			JSON.stringify({"model": model, "messages": msgs, "stream": false, "keep_alive": "30m", "options": {"num_predict": 400}}))
+	if err != OK:
+		http.queue_free()
+		_add_msg("ai", "Impossible de joindre Ollama.")
